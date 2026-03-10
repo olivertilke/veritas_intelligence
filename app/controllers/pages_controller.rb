@@ -1,5 +1,6 @@
 class PagesController < ApplicationController
-  def index
-    @pages = Page.all
+  skip_before_action :authenticate_user!, only: [ :home ]
+
+  def home
   end
 end
