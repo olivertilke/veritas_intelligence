@@ -156,42 +156,164 @@
         </div>
       </div>
 
-      <!-- Right Column: AI Analysis Status -->
+      <!-- Right Column: VERITAS Triad AI Analysis -->
       <div class="col-md-4">
-        <div class="veritas-feed-card h-100" style="background: rgba(13, 17, 23, 0.9);">
-          <div class="veritas-panel-header mb-4">
-            <span class="panel-icon">&#9654;</span>
-            <span class="panel-title">AI_ANALYSIS</span>
-            <span class="panel-badge <%= @article.ai_analysis.present? ? '' : 'text-warning border-warning' %>">
-              <%= @article.ai_analysis.present? ? 'COMPLETE' : 'PENDING' %>
-            </span>
+        <div class="veritas-feed-card h-100" style="background: rgba(13, 17, 23, 0.95); padding: 1.5rem;">
+          
+          <% analysis = @article.ai_analysis %>
+          <% status = analysis&.analysis_status %>
+
+          <!-- Panel Header -->
+          <div class="d-flex align-items-center justify-content-between mb-4 pb-3" style="border-bottom: 1px solid rgba(56,189,248,0.15);">
+            <div class="d-flex align-items-center gap-2">
+              <span style="color: #38BDF8; font-size: 0.8rem;">&#9654;</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: white; letter-spacing: 2px;">VERITAS_TRIAD</span>
+            </div>
+            <% if status == 'complete' %>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #22c55e; border: 1px solid rgba(34,197,94,0.3); padding: 2px 8px; border-radius: 2px;">VERIFIED</span>
+            <% elsif status == 'analyzing' %>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); padding: 2px 8px; border-radius: 2px;">ANALYZING</span>
+            <% else %>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b; border: 1px solid rgba(100,116,139,0.3); padding: 2px 8px; border-radius: 2px;">QUEUED</span>
+            <% end %>
           </div>
 
-          <% if @article.ai_analysis.present? %>
-            <!-- AI Analysis Content goes here when we build Phase 2 -->
-            <div class="text-center text-success veritas-meta mb-4">
-              <i class="fa fa-check-circle fa-2x mb-2"></i>
-              <div>ANALYSIS COMPLETE</div>
+          <% if status == 'complete' %>
+            <!-- ━━━ TRUST SCORE GAUGE ━━━ -->
+            <% trust = analysis.trust_score.to_i %>
+            <% trust_color = trust >= 70 ? '#22c55e' : trust >= 40 ? '#f59e0b' : '#ef4444' %>
+            <div class="text-center mb-4">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b; letter-spacing: 3px; margin-bottom: 8px;">TRUST SCORE</div>
+              <div style="font-family: 'Inter', sans-serif; font-size: 3.5rem; font-weight: 800; color: <%= trust_color %>; line-height: 1;">
+                <%= trust %>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #64748b;">/100</div>
+              <!-- Trust bar -->
+              <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.05); border-radius: 4px; margin-top: 10px; overflow: hidden;">
+                <div style="width: <%= trust %>%; height: 100%; background: <%= trust_color %>; border-radius: 4px; transition: width 1s ease;"></div>
+              </div>
             </div>
+
+            <!-- ━━━ KEY METRICS ━━━ -->
+            <% threat_colors = { 'CRITICAL' => '#ef4444', 'HIGH' => '#f97316', 'MODERATE' => '#f59e0b', 'LOW' => '#22c55e', 'NEGLIGIBLE' => '#64748b' } %>
+            <% threat_color = threat_colors[analysis.threat_level] || '#64748b' %>
+
+            <div class="mb-3 py-2" style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b;">THREAT LEVEL</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: <%= threat_color %>; font-weight: 700;"><%= analysis.threat_level %></span>
+              </div>
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b;">SENTIMENT</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: <%= analysis.sentiment_color %>; font-weight: 700;"><%= analysis.sentiment_label %></span>
+              </div>
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b;">TOPIC</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #38BDF8;"><%= analysis.geopolitical_topic %></span>
+              </div>
+              <div class="d-flex justify-content-between align-items-center">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b;">ANOMALIES</span>
+                <% if analysis.linguistic_anomaly_flag %>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #ef4444;">&#9888; DETECTED</span>
+                <% else %>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #22c55e;">&#10003; CLEAN</span>
+                <% end %>
+              </div>
+            </div>
+
+            <!-- ━━━ AI SUMMARY ━━━ -->
+            <div class="mb-3">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b; letter-spacing: 2px; margin-bottom: 6px;">INTELLIGENCE SUMMARY</div>
+              <p style="font-family: 'Inter', sans-serif; font-size: 0.85rem; color: rgba(255,255,255,0.8); line-height: 1.6; margin: 0;">
+                <%= analysis.summary %>
+              </p>
+            </div>
+
+            <% if analysis.anomaly_notes.present? && analysis.linguistic_anomaly_flag %>
+              <div class="mb-3" style="background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 4px; padding: 10px;">
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #ef4444; letter-spacing: 2px; margin-bottom: 4px;">&#9888; ANOMALY REPORT</div>
+                <p style="font-family: 'Inter', sans-serif; font-size: 0.8rem; color: rgba(239,68,68,0.8); line-height: 1.5; margin: 0;">
+                  <%= analysis.anomaly_notes %>
+                </p>
+              </div>
+            <% end %>
+
+            <!-- ━━━ TRIAD AGENT BREAKDOWN ━━━ -->
+            <div style="border-top: 1px solid rgba(56,189,248,0.1); padding-top: 12px; margin-top: 8px;">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #64748b; letter-spacing: 2px; margin-bottom: 10px;">AGENT REPORTS</div>
+              
+              <% if analysis.arbiter_response.present? %>
+                <div class="d-flex align-items-center gap-2 mb-2">
+                  <span style="font-size: 0.7rem;">⚖️</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #94a3b8;">
+                    CONSENSUS: <span style="color: white;"><%= analysis.arbiter_response['agreement_level'] %></span>
+                  </span>
+                </div>
+              <% end %>
+
+              <div class="d-flex gap-2 mb-2">
+                <% analyst_trust = analysis.analyst_response&.dig('trust_score') %>
+                <% sentinel_trust = analysis.sentinel_response&.dig('independent_trust_score') %>
+                <div style="flex: 1; background: rgba(56,189,248,0.05); border: 1px solid rgba(56,189,248,0.1); border-radius: 4px; padding: 8px; text-align: center;">
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem; color: #64748b;">🔍 ANALYST</div>
+                  <div style="font-family: 'Inter', sans-serif; font-size: 1.2rem; font-weight: 700; color: white;"><%= analyst_trust || '--' %></div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.5rem; color: #475569;">Gemini</div>
+                </div>
+                <div style="flex: 1; background: rgba(56,189,248,0.05); border: 1px solid rgba(56,189,248,0.1); border-radius: 4px; padding: 8px; text-align: center;">
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem; color: #64748b;">🛡️ SENTINEL</div>
+                  <div style="font-family: 'Inter', sans-serif; font-size: 1.2rem; font-weight: 700; color: white;"><%= sentinel_trust || '--' %></div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.5rem; color: #475569;">GPT-4o</div>
+                </div>
+                <div style="flex: 1; background: rgba(56,189,248,0.05); border: 1px solid rgba(56,189,248,0.1); border-radius: 4px; padding: 8px; text-align: center;">
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem; color: #64748b;">⚖️ ARBITER</div>
+                  <div style="font-family: 'Inter', sans-serif; font-size: 1.2rem; font-weight: 700; color: white;"><%= trust %></div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.5rem; color: #475569;">Claude</div>
+                </div>
+              </div>
+
+              <% if analysis.arbiter_response&.dig('arbitration_notes').present? %>
+                <div style="margin-top: 8px;">
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem; color: #64748b; letter-spacing: 1px; margin-bottom: 4px;">ARBITER NOTES</div>
+                  <p style="font-family: 'Inter', sans-serif; font-size: 0.75rem; color: rgba(255,255,255,0.6); line-height: 1.5; margin: 0;">
+                    <%= analysis.arbiter_response['arbitration_notes'] %>
+                  </p>
+                </div>
+              <% end %>
+            </div>
+
+          <% elsif status == 'analyzing' %>
+            <!-- Analyzing state -->
+            <div class="text-center py-5">
+              <div style="margin-bottom: 20px;">
+                <i class="fa fa-circle-notch fa-spin fa-3x" style="color: #38BDF8;"></i>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: white; margin-bottom: 8px;">TRIAD PROCESSING</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #64748b; line-height: 1.8;">
+                🔍 ANALYST (Gemini Flash)<br>
+                🛡️ SENTINEL (GPT-4o-mini)<br>
+                ⚖️ ARBITER (Claude Haiku)
+              </div>
+              <p style="font-family: 'Inter', sans-serif; font-size: 0.75rem; color: #475569; margin-top: 15px;">
+                Cross-verifying intelligence...<br>Refresh page in ~15 seconds.
+              </p>
+            </div>
+
           <% else %>
-            <div class="text-center text-warning veritas-meta mb-4 mt-5">
-              <i class="fa fa-cog fa-spin fa-2x mb-3"></i>
-              <div>AWAITING PHASE 2<br>LLM PROCESSING</div>
-            </div>
-            
-            <div class="veritas-sys-row mt-4">
-              <span class="sys-label">TRUST SCORE</span>
-              <span class="sys-value text-muted">--/100</span>
-            </div>
-            <div class="veritas-sys-row">
-              <span class="sys-label">SENTIMENT</span>
-              <span class="sys-value text-muted">UNKNOWN</span>
-            </div>
-            <div class="veritas-sys-row">
-              <span class="sys-label">THREAT LEVEL</span>
-              <span class="sys-value text-muted">CALCULATING</span>
+            <!-- Queued / Not started state -->
+            <div class="text-center py-5">
+              <div style="margin-bottom: 20px;">
+                <i class="fa fa-satellite-dish fa-2x" style="color: #64748b;"></i>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: #64748b; line-height: 1.8;">
+                ANALYSIS QUEUED<br>
+                <span style="font-size: 0.65rem;">3 LLM agents dispatched</span>
+              </div>
+              <p style="font-family: 'Inter', sans-serif; font-size: 0.75rem; color: #475569; margin-top: 15px;">
+                Refresh in ~20 seconds to see results.
+              </p>
             </div>
           <% end %>
+
         </div>
       </div>
     </div>
