@@ -10,18 +10,22 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_10_163725) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_11_114744) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "ai_analyses", force: :cascade do |t|
+    t.string "analysis_status", default: "pending"
+    t.jsonb "analyst_response"
     t.string "anomaly_notes"
+    t.jsonb "arbiter_response"
     t.bigint "article_id", null: false
     t.datetime "created_at", null: false
     t.string "geopolitical_topic"
     t.boolean "linguistic_anomaly_flag"
     t.string "sentiment_color"
     t.string "sentiment_label"
+    t.jsonb "sentinel_response"
     t.string "summary"
     t.string "threat_level"
     t.float "trust_score"

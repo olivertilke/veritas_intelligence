@@ -6,6 +6,11 @@ class ArticlesController < ApplicationController
   def show
     @article = Article.includes(:country, :region, :ai_analysis, :narrative_arcs).find(params[:id])
 
+    # Kick off the VERITAS Triad analysis pipeline if not yet analyzed
+    if @article.ai_analysis.blank? || @article.ai_analysis.analysis_status.nil?
+      AnalyzeArticleJob.perform_later(@article.id)
+    end
+
     return unless @article.content.blank? && @article.source_url.present?
 
     base_uri = URI.parse(@article.source_url)
