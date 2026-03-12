@@ -74,6 +74,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_12_114424) do
     t.index ["region_id"], name: "index_countries_on_region_id"
   end
 
+  create_table "intelligence_reports", force: :cascade do |t|
+    t.jsonb "analyzed_article_ids"
+    t.datetime "created_at", null: false
+    t.bigint "region_id", null: false
+    t.string "status"
+    t.text "summary"
+    t.datetime "updated_at", null: false
+    t.index ["region_id"], name: "index_intelligence_reports_on_region_id"
+  end
+
   create_table "narrative_arcs", force: :cascade do |t|
     t.string "arc_color"
     t.bigint "article_id", null: false
@@ -276,6 +286,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_12_114424) do
   add_foreign_key "articles", "regions"
   add_foreign_key "briefings", "users"
   add_foreign_key "countries", "regions"
+  add_foreign_key "intelligence_reports", "regions"
   add_foreign_key "narrative_arcs", "articles"
   add_foreign_key "saved_articles", "articles"
   add_foreign_key "saved_articles", "users"
