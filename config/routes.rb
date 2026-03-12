@@ -21,6 +21,7 @@ Rails.application.routes.draw do
   end
 
   resources :perspective_filters, only: [:index, :show]
+  resources :saved_articles, only: [:index, :show, :create, :destroy]
   resources :narrative_convergences, only: [:index, :show] do
     collection do
       post :run_detection
