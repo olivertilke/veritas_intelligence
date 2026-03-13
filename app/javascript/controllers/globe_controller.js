@@ -70,7 +70,7 @@ export default class extends Controller {
       .arcDashLength(0.4)
       .arcDashGap(0.2)
       .arcDashAnimateTime(6400)
-      .arcStroke(0.9)
+      .arcStroke(0.5)
       .onArcHover(arc => this._onArcHover(arc))
       .onArcClick(arc => this._onArcClicked(arc))
       // Tooltips
