@@ -1,3 +1,37 @@
+// Search results scrollable panel
+.search-results-panel {
+  width: 80%;
+  background: rgba(13, 17, 23, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 8px;
+  padding: 1.5rem 1.5rem 2rem;
+  max-height: calc(100vh - 320px);
+  overflow-y: scroll;
+  overflow-x: hidden;
+
+  // Custom cyberpunk scrollbar
+  scrollbar-width: thin;
+  scrollbar-color: #00d4ff rgba(56, 189, 248, 0.08);
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: rgba(56, 189, 248, 0.05);
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #00d4ff;
+    border-radius: 3px;
+
+    &:hover {
+      background: #38BDF8;
+    }
+  }
+}
+
 // VERITAS Search Page Styles
 
 .veritas-search-form {
