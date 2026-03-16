@@ -55,7 +55,7 @@ class OpenRouterClient
     request = Net::HTTP::Post.new(uri)
     request["Authorization"] = "Bearer #{@api_key}"
     request["Content-Type"]  = "application/json"
-    request["HTTP-Referer"]  = "https://veritas-app.com"
+    request["HTTP-Referer"]  = "https://veritas-app-314a53c53525.herokuapp.com/"
     request["X-Title"]       = "VERITAS Intelligence Platform"
     
     # OpenRouter fully supports OpenAI's native embedding endpoint format
@@ -96,7 +96,7 @@ class OpenRouterClient
     request = Net::HTTP::Post.new(uri)
     request["Authorization"] = "Bearer #{@api_key}"
     request["Content-Type"]  = "application/json"
-    request["HTTP-Referer"]  = "https://veritas-app.com"
+    request["HTTP-Referer"]  = "https://veritas-app-314a53c53525.herokuapp.com/"
     request["X-Title"]       = "VERITAS Intelligence Platform"
     request.body = body.to_json
 
