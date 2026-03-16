@@ -178,13 +178,35 @@ def seed_articles!(created_regions)
             else '#38bdf8'
             end
     
+    analyst_trust = [[trust + rand(-5..5), 100].min, 1].max
+    sentinel_trust = [[trust + rand(-8..8), 100].min, 1].max
+    
     a.create_ai_analysis!(
       threat_level: threat.to_s,
       trust_score: trust.to_f,
       sentiment_label: label,
       sentiment_color: color,
       analysis_status: 'complete',
-      summary: "AI generated summary for #{a.headline}"
+      summary: "AI generated summary for #{a.headline}",
+      analyst_response: {
+        "trust_score" => analyst_trust,
+        "sentiment_label" => label,
+        "geopolitical_topic" => ["Military", "Trade", "Diplomacy", "Cyber"].sample,
+        "threat_level" => threat.to_s,
+        "reasoning" => "Initial automated analyst scan complete."
+      },
+      sentinel_response: {
+        "independent_trust_score" => sentinel_trust,
+        "bias_direction" => ["LEFT", "RIGHT", "CENTER", "NEUTRAL"].sample,
+        "linguistic_anomaly_flag" => [true, false].sample,
+        "independent_threat_assessment" => threat.to_s,
+        "reasoning" => "Initial automated forensic scan complete."
+      },
+      arbiter_response: {
+        "agreement_level" => "HIGH_CONSENSUS",
+        "final_trust_score" => trust,
+        "arbitration_notes" => "Mock data generated for fast initialization."
+      }
     )
   end
 
