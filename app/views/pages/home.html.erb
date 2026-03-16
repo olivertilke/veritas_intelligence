@@ -209,8 +209,8 @@
                 </span>
               <% end %>
 
-              <%# Admins: always show RUN button %>
-              <% if current_user&.admin? %>
+              <%# All logged-in users can trigger analysis %>
+              <% if user_signed_in? %>
                 <button data-action="click->analysis-progress#run"
                         data-analysis-progress-target="button"
                         class="btn veritas-analysis-btn">
