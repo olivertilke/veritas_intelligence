@@ -9,7 +9,6 @@
 # ---------------------------------------------------------------
 class IntelligenceReportsController < ApplicationController
   before_action :authenticate_user!
-  before_action :ensure_admin!, only: [:create]
   before_action :set_report, only: %i[show status]
   before_action :ensure_report_accessible!, only: %i[show status]
 
