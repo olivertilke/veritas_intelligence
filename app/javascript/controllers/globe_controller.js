@@ -347,9 +347,16 @@ export default class extends Controller {
     const midLng = (arc.startLng + arc.endLng) / 2
     this._flyTo(midLat, midLng, 2.0)
     if (arc.articleId) this._setActiveCard(arc.articleId)
-    
+
     // Show hop details in timeline sidebar
     this._showHopDetails(arc)
+
+    // Open Narrative DNA panel for this arc's source article
+    if (arc.articleId) {
+      window.dispatchEvent(new CustomEvent("veritas:openNarrativeDna", {
+        detail: { articleId: arc.articleId }
+      }))
+    }
   }
 
   _onArcHover(arc) {

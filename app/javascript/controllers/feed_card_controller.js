@@ -12,4 +12,11 @@ export default class extends Controller {
   openArticle(event) {
     event.stopPropagation()
   }
+
+  openDna(event) {
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("veritas:openNarrativeDna", {
+      detail: { articleId: this.articleIdValue }
+    }))
+  }
 }

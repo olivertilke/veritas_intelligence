@@ -1,6 +1,6 @@
 class PagesController < ApplicationController
   DEFAULT_ARC_COLOR = "#00f0ff".freeze
-  skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search]
+  skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search, :narrative_dna]
 
   def welcome
     redirect_to dashboard_path if user_signed_in?
@@ -139,6 +139,15 @@ class PagesController < ApplicationController
     end
 
     render json: { points: points, arcs: arcs, regions: regions }
+  end
+
+  # GET /api/narrative_dna/:article_id — Graph JSON for Narrative DNA panel
+  def narrative_dna
+    article = Article.find_by(id: params[:article_id])
+    return render json: { error: "Not found" }, status: :not_found unless article
+
+    data = NarrativeDnaService.new(article).call
+    render json: data
   end
 
   def search
