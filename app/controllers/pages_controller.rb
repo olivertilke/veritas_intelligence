@@ -177,7 +177,7 @@ class PagesController < ApplicationController
   # GET /api/entity_nexus — Force-directed graph JSON for Entity Nexus panel
   def entity_nexus
     service = EntityNexusService.new(
-      min_mentions: (params[:min_mentions] || 2).to_i,
+      min_mentions: (params[:min_mentions] || 1).to_i,
       entity_type:  params[:entity_type].presence,
       article_id:   params[:article_id].presence
     )
@@ -186,7 +186,7 @@ class PagesController < ApplicationController
 
   # GET /api/entity_nexus/:entity_id — Detail JSON for a single entity node
   def entity_nexus_detail
-    entity = Entity.includes(articles: [:ai_analysis, :country]).find_by(id: params[:entity_id])
+    entity = Entity.find_by(id: params[:entity_id])
     return render json: { error: "Not found" }, status: :not_found unless entity
 
     articles = entity.articles
@@ -194,31 +194,37 @@ class PagesController < ApplicationController
       .order(published_at: :desc)
       .limit(8)
 
-    # Top connected entities (co-mentioned most)
-    connected = if entity.articles.exists?
-      article_ids = entity.article_ids.first(50)
-      EntityMention
-        .where(article_id: article_ids)
-        .where.not(entity_id: entity.id)
-        .joins(:entity)
-        .group("entities.id, entities.name, entities.entity_type")
-        .order("COUNT(*) DESC")
-        .limit(5)
-        .pluck("entities.id", "entities.name", "entities.entity_type", "COUNT(*)")
-        .map { |(id, name, type, count)| { id: id, name: name, entity_type: type, shared_articles: count } }
+    # Top connected entities via raw SQL — avoids COUNT(*) pluck issues
+    article_ids = entity.article_ids.first(50)
+    connected = if article_ids.any?
+      rows = ActiveRecord::Base.connection.execute(<<~SQL)
+        SELECT e.id, e.name, e.entity_type, COUNT(*) AS shared_count
+        FROM entity_mentions em
+        JOIN entities e ON e.id = em.entity_id
+        WHERE em.article_id IN (#{article_ids.map(&:to_i).join(',')})
+          AND em.entity_id != #{entity.id.to_i}
+        GROUP BY e.id, e.name, e.entity_type
+        ORDER BY shared_count DESC
+        LIMIT 5
+      SQL
+      rows.map { |r| { id: r["id"].to_i, name: r["name"], entity_type: r["entity_type"], shared_articles: r["shared_count"].to_i } }
     else
       []
     end
 
     sentiment_breakdown = compute_sentiment_breakdown(entity)
+    max_mentions = Entity.maximum(:mentions_count).to_f
+    vol_score    = max_mentions > 0 ? (entity.mentions_count.to_f / max_mentions) : 0
+    power_index  = (vol_score * 60).round  # simplified — full calc needs region/threat data
 
     render json: {
-      id:             entity.id,
-      name:           entity.name,
-      entity_type:    entity.entity_type,
-      color:          entity.color,
-      mentions_count: entity.mentions_count,
-      first_seen_at:  entity.first_seen_at&.iso8601,
+      id:                 entity.id,
+      name:               entity.name,
+      entity_type:        entity.entity_type,
+      color:              entity.color,
+      mentions_count:     entity.mentions_count,
+      power_index:        power_index,
+      first_seen_at:      entity.first_seen_at&.iso8601,
       connected_entities: connected,
       articles: articles.map { |a| {
         id:              a.id,
@@ -231,6 +237,9 @@ class PagesController < ApplicationController
       }},
       sentiment: sentiment_breakdown
     }
+  rescue StandardError => e
+    Rails.logger.error "[EntityNexusDetail] ##{params[:entity_id]}: #{e.class} #{e.message}"
+    render json: { error: "Internal error" }, status: :internal_server_error
   end
 
   # GET /api/narrative_dna/:article_id — Graph JSON for Narrative DNA panel

@@ -22,7 +22,7 @@ class EntityNexusService
   MAX_EDGES       = 200
   SPARKLINE_SLOTS = 6   # 6 × 8h = 48h window
 
-  def initialize(min_mentions: 2, entity_type: nil, article_id: nil)
+  def initialize(min_mentions: 1, entity_type: nil, article_id: nil)
     @min_mentions = min_mentions.to_i
     @entity_type  = entity_type.presence
     @article_id   = article_id.presence
@@ -187,7 +187,14 @@ class EntityNexusService
       SELECT em1.entity_id AS source_id,
              em2.entity_id AS target_id,
              COUNT(*)      AS weight,
-             AVG(COALESCE(ai.threat_level::integer, 0)) AS avg_threat
+             AVG(CASE
+               WHEN ai.threat_level ~ '^[0-9]+$' THEN ai.threat_level::integer
+               WHEN ai.threat_level = 'CRITICAL'  THEN 9
+               WHEN ai.threat_level = 'HIGH'       THEN 7
+               WHEN ai.threat_level = 'MODERATE'   THEN 5
+               WHEN ai.threat_level = 'LOW'         THEN 2
+               ELSE 0
+             END) AS avg_threat
       FROM entity_mentions em1
       JOIN entity_mentions em2
         ON em1.article_id = em2.article_id
