@@ -1,6 +1,6 @@
 class PagesController < ApplicationController
   DEFAULT_ARC_COLOR = "#00f0ff".freeze
-  skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search, :narrative_dna, :tribunal, :article_preview]
+  skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search, :narrative_dna, :tribunal, :article_preview, :entity_nexus, :entity_nexus_detail]
 
   def welcome
     redirect_to dashboard_path if user_signed_in?
@@ -174,6 +174,65 @@ class PagesController < ApplicationController
     render json: data
   end
 
+  # GET /api/entity_nexus — Force-directed graph JSON for Entity Nexus panel
+  def entity_nexus
+    service = EntityNexusService.new(
+      min_mentions: (params[:min_mentions] || 2).to_i,
+      entity_type:  params[:entity_type].presence,
+      article_id:   params[:article_id].presence
+    )
+    render json: service.call
+  end
+
+  # GET /api/entity_nexus/:entity_id — Detail JSON for a single entity node
+  def entity_nexus_detail
+    entity = Entity.includes(articles: [:ai_analysis, :country]).find_by(id: params[:entity_id])
+    return render json: { error: "Not found" }, status: :not_found unless entity
+
+    articles = entity.articles
+      .includes(:ai_analysis, :country)
+      .order(published_at: :desc)
+      .limit(8)
+
+    # Top connected entities (co-mentioned most)
+    connected = if entity.articles.exists?
+      article_ids = entity.article_ids.first(50)
+      EntityMention
+        .where(article_id: article_ids)
+        .where.not(entity_id: entity.id)
+        .joins(:entity)
+        .group("entities.id, entities.name, entities.entity_type")
+        .order("COUNT(*) DESC")
+        .limit(5)
+        .pluck("entities.id", "entities.name", "entities.entity_type", "COUNT(*)")
+        .map { |(id, name, type, count)| { id: id, name: name, entity_type: type, shared_articles: count } }
+    else
+      []
+    end
+
+    sentiment_breakdown = compute_sentiment_breakdown(entity)
+
+    render json: {
+      id:             entity.id,
+      name:           entity.name,
+      entity_type:    entity.entity_type,
+      color:          entity.color,
+      mentions_count: entity.mentions_count,
+      first_seen_at:  entity.first_seen_at&.iso8601,
+      connected_entities: connected,
+      articles: articles.map { |a| {
+        id:              a.id,
+        headline:        a.headline,
+        source_name:     a.source_name,
+        published_at:    a.published_at&.iso8601,
+        country:         a.country&.name,
+        threat_level:    a.ai_analysis&.threat_level,
+        sentiment_color: a.ai_analysis&.sentiment_color || "#6b7280"
+      }},
+      sentiment: sentiment_breakdown
+    }
+  end
+
   # GET /api/narrative_dna/:article_id — Graph JSON for Narrative DNA panel
   def narrative_dna
     article = Article.find_by(id: params[:article_id])
@@ -215,6 +274,27 @@ class PagesController < ApplicationController
   end
 
   private
+
+  def compute_sentiment_breakdown(entity)
+    labels = entity.articles
+      .joins(:ai_analysis)
+      .where.not(ai_analyses: { sentiment_label: nil })
+      .pluck("ai_analyses.sentiment_label")
+      .map { |l| l.to_s.downcase }
+
+    total = labels.size.to_f
+    return { positive: 0, neutral: 0, negative: 0 } if total.zero?
+
+    positive = labels.count { |l| l.include?("positive") || l.include?("bullish") }
+    negative = labels.count { |l| l.include?("negative") || l.include?("bearish") || l.include?("hostile") }
+    neutral  = labels.size - positive - negative
+
+    {
+      positive: (positive / total * 100).round,
+      neutral:  (neutral  / total * 100).round,
+      negative: (negative / total * 100).round
+    }
+  end
 
   def build_route_segments(filtered_articles, perspective, to_time)
     filtered_ids = filtered_articles.map(&:id)
