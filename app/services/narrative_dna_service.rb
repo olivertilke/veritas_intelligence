@@ -22,6 +22,7 @@ class NarrativeDnaService
   def call
     routes = NarrativeRoute
       .joins(:narrative_arc)
+      .includes(:narrative_arc)
       .where(narrative_arcs: { article_id: @article.id })
       .where.not(hops: nil)
 
@@ -31,13 +32,16 @@ class NarrativeDnaService
     edges = []
 
     routes.each do |route|
-      hops = route.hops
+      hops            = route.hops
+      arc_article_id  = route.narrative_arc.article_id
       next if hops.blank? || hops.size < 2
 
       hops.each_with_index do |hop, index|
         nid = node_key(hop)
 
         unless nodes[nid]
+          article_id = index.zero? ? arc_article_id : find_article_id_for_hop(hop)
+
           nodes[nid] = {
             id:            nid,
             type:          index.zero? ? "origin" : "hop",
@@ -49,6 +53,7 @@ class NarrativeDnaService
             framing_shift: hop["framing_shift"] || "original",
             confidence:    hop["confidence_score"] || 0.5,
             bias_color:    framing_color(hop["framing_shift"]),
+            article_id:    article_id,
             reach_count:   0
           }
         end
@@ -90,6 +95,20 @@ class NarrativeDnaService
 
   private
 
+  # Best-effort article lookup for non-origin hops.
+  # Matches by source_name + published_at within a 4-hour window.
+  def find_article_id_for_hop(hop)
+    return nil unless hop["source_name"].present? && hop["published_at"].present?
+
+    pub_time = Time.parse(hop["published_at"]) rescue nil
+    return nil unless pub_time
+
+    Article
+      .where(source_name: hop["source_name"])
+      .where(published_at: (pub_time - 4.hours)..(pub_time + 4.hours))
+      .pick(:id)
+  end
+
   def node_key(hop)
     name    = (hop["source_name"]    || "unknown").downcase.gsub(/[^a-z0-9]+/, "_")
     country = (hop["source_country"] || "xx").downcase.gsub(/[^a-z0-9]+/, "_")
@@ -102,16 +121,20 @@ class NarrativeDnaService
 
   def build_meta(routes, nodes)
     manipulation_scores = routes.map(&:manipulation_score).compact
-    speed_scores        = routes.map(&:propagation_speed).compact
+
+    # Unique countries reached across all routes — key geographic amplification signal
+    reach_countries = routes.flat_map { |r|
+      (r.hops || []).map { |h| h["source_country"] }.compact
+    }.uniq.size
 
     {
-      article_id:            @article.id,
-      headline:              @article.headline,
-      total_routes:          routes.size,
-      total_nodes:           nodes.size,
-      max_manipulation:      manipulation_scores.max&.round(3) || 0,
-      manipulation_avg:      manipulation_scores.any? ? (manipulation_scores.sum / manipulation_scores.size).round(3) : 0,
-      propagation_speed_avg: speed_scores.any? ? (speed_scores.sum / speed_scores.size).round(1) : 0
+      article_id:       @article.id,
+      headline:         @article.headline,
+      total_routes:     routes.size,
+      total_nodes:      nodes.size,
+      max_manipulation: manipulation_scores.max&.round(3) || 0,
+      manipulation_avg: manipulation_scores.any? ? (manipulation_scores.sum / manipulation_scores.size).round(3) : 0,
+      reach_countries:  reach_countries
     }
   end
 

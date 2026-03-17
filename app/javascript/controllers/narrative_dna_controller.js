@@ -163,6 +163,16 @@ export default class extends Controller {
           })
       )
 
+    // Selection ring (hidden by default, shown on click)
+    node.append("circle")
+      .attr("class", "ndna-sel-ring")
+      .attr("r",            d => this._nodeRadius(d) + 12)
+      .attr("fill",         "none")
+      .attr("stroke",       "#ffffff")
+      .attr("stroke-width", 1.5)
+      .attr("stroke-opacity", 0)
+      .attr("stroke-dasharray", "4 3")
+
     // Outer pulse ring — origin nodes only
     node.filter(d => d.type === "origin")
       .append("circle")
@@ -210,11 +220,7 @@ export default class extends Controller {
       })
       .on("mouseleave", () => tooltip.style("opacity", 0))
       .on("click", (_event, d) => {
-        if (d.lat && d.lng) {
-          window.dispatchEvent(new CustomEvent("veritas:flyTo", {
-            detail: { lat: d.lat, lng: d.lng, articleId: null }
-          }))
-        }
+        this._openNodePreview(d)
       })
 
     // ---- Tick: update positions ----
@@ -242,6 +248,7 @@ export default class extends Controller {
     }, 800)
 
     this._simulation = simulation
+    this._svg = svg
   }
 
   _nodeRadius(d) {
@@ -279,9 +286,7 @@ export default class extends Controller {
     const manipColor = meta.max_manipulation > 0.7 ? "#ef4444"
                      : meta.max_manipulation > 0.3 ? "#f59e0b"
                      : "#22c55e"
-    const speedStr   = meta.propagation_speed_avg > 0
-                     ? `${Number(meta.propagation_speed_avg).toLocaleString()} km/h`
-                     : "N/A"
+    const reachCountries = meta.reach_countries ?? "—"
 
     return `
       <div class="ndna-header">
@@ -304,8 +309,8 @@ export default class extends Controller {
             <span class="ndna-stat-label">MANIPULATION</span>
           </div>
           <div class="ndna-stat">
-            <span class="ndna-stat-value">${speedStr}</span>
-            <span class="ndna-stat-label">AVG SPEED</span>
+            <span class="ndna-stat-value">${reachCountries}</span>
+            <span class="ndna-stat-label">COUNTRIES</span>
           </div>
         </div>
         <div class="ndna-legend">
@@ -316,6 +321,7 @@ export default class extends Controller {
         </div>
       </div>
       <div id="ndna-graph-canvas" class="ndna-graph-canvas"></div>
+      <div id="ndna-node-preview" class="ndna-node-preview"></div>
     `
   }
 
@@ -350,9 +356,128 @@ export default class extends Controller {
     `
   }
 
+  async _openNodePreview(nodeData) {
+    this._selectedNodeId = nodeData.id
+
+    // Update selection rings
+    if (this._svg) {
+      this._svg.selectAll(".ndna-sel-ring")
+        .attr("stroke-opacity", d => d.id === nodeData.id ? 0.7 : 0)
+    }
+
+    const preview = document.getElementById("ndna-node-preview")
+    if (!preview) return
+
+    // Show loading state immediately
+    preview.innerHTML = this._previewLoadingHTML(nodeData)
+    preview.classList.add("ndna-node-preview--visible")
+
+    // Wire up close button
+    preview.querySelector(".ndna-preview-close")?.addEventListener("click", () => this._closeNodePreview())
+
+    if (!nodeData.article_id) {
+      preview.innerHTML = this._previewNoArticleHTML(nodeData)
+      preview.querySelector(".ndna-preview-close")?.addEventListener("click", () => this._closeNodePreview())
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/article_preview/${nodeData.article_id}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const article = await res.json()
+      preview.innerHTML = this._previewHTML(nodeData, article)
+    } catch (err) {
+      preview.innerHTML = this._previewNoArticleHTML(nodeData)
+    }
+
+    preview.querySelector(".ndna-preview-close")?.addEventListener("click", () => this._closeNodePreview())
+  }
+
+  _closeNodePreview() {
+    this._selectedNodeId = null
+
+    if (this._svg) {
+      this._svg.selectAll(".ndna-sel-ring").attr("stroke-opacity", 0)
+    }
+
+    const preview = document.getElementById("ndna-node-preview")
+    if (preview) {
+      preview.classList.remove("ndna-node-preview--visible")
+      setTimeout(() => { preview.innerHTML = "" }, 360)
+    }
+  }
+
+  _previewHTML(nodeData, article) {
+    const framingColor = nodeData.bias_color || "#6b7280"
+    const framing      = (nodeData.framing_shift || "unknown").toUpperCase()
+    const conf         = nodeData.confidence != null ? `${(nodeData.confidence * 100).toFixed(0)}%` : "?"
+    const country      = article.country || nodeData.country || "?"
+    const pubDate      = article.published_at
+      ? new Date(article.published_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+      : "Unknown"
+
+    return `
+      <div class="ndna-preview">
+        <div class="ndna-preview-header">
+          <span class="ndna-preview-label">NODE PREVIEW</span>
+          <button class="ndna-preview-close" aria-label="Close preview">✕</button>
+        </div>
+        <div class="ndna-preview-meta">
+          <span class="ndna-preview-source">${article.source || nodeData.source_name}</span>
+          <span class="ndna-preview-framing" style="color:${framingColor}">${framing}</span>
+          <span class="ndna-preview-confidence">${conf} CONF</span>
+          <span>${country} · ${pubDate}</span>
+        </div>
+        <div class="ndna-preview-headline">${article.headline || "—"}</div>
+        <div class="ndna-preview-snippet">${article.snippet || ""}</div>
+        <a class="ndna-preview-link" href="/articles/${article.id}" target="_blank">
+          VIEW FULL ARTICLE →
+        </a>
+      </div>
+    `
+  }
+
+  _previewLoadingHTML(nodeData) {
+    return `
+      <div class="ndna-preview">
+        <div class="ndna-preview-header">
+          <span class="ndna-preview-label">NODE PREVIEW</span>
+          <button class="ndna-preview-close" aria-label="Close preview">✕</button>
+        </div>
+        <div class="ndna-preview-meta">
+          <span class="ndna-preview-source">${nodeData.source_name || "Unknown"}</span>
+        </div>
+        <div class="ndna-preview-no-article">Loading article data…</div>
+      </div>
+    `
+  }
+
+  _previewNoArticleHTML(nodeData) {
+    const framingColor = nodeData.bias_color || "#6b7280"
+    const framing      = (nodeData.framing_shift || "unknown").toUpperCase()
+    const conf         = nodeData.confidence != null ? `${(nodeData.confidence * 100).toFixed(0)}%` : "?"
+
+    return `
+      <div class="ndna-preview">
+        <div class="ndna-preview-header">
+          <span class="ndna-preview-label">NODE PREVIEW</span>
+          <button class="ndna-preview-close" aria-label="Close preview">✕</button>
+        </div>
+        <div class="ndna-preview-meta">
+          <span class="ndna-preview-source">${nodeData.source_name || "Unknown"}</span>
+          <span class="ndna-preview-framing" style="color:${framingColor}">${framing}</span>
+          <span class="ndna-preview-confidence">${conf} CONF</span>
+        </div>
+        <div class="ndna-preview-no-article">No article record linked to this node.</div>
+      </div>
+    `
+  }
+
   _cleanup() {
     this._simulation?.stop()
     this._simulation = null
+    this._svg = null
+    this._selectedNodeId = null
     const panel = document.getElementById("narrative-dna-panel")
     if (panel) {
       panel.classList.add("ndna-panel--closing")

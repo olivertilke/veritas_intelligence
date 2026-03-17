@@ -12,8 +12,9 @@ Rails.application.routes.draw do
   
   # Globe & Search APIs
   get  "api/globe_data",                    to: "pages#globe_data"
-  get  "api/narrative_dna/:article_id",     to: "pages#narrative_dna", as: :narrative_dna
-  get  "api/tribunal/:article_id",          to: "pages#tribunal",      as: :tribunal
+  get  "api/narrative_dna/:article_id",     to: "pages#narrative_dna",    as: :narrative_dna
+  get  "api/tribunal/:article_id",          to: "pages#tribunal",         as: :tribunal
+  get  "api/article_preview/:article_id",   to: "pages#article_preview",  as: :article_preview
   get  "api/trending_topics",               to: "api/trending_topics#index"
   get  "api/search_suggestions",            to: "api/search_suggestions#index"
   post "api/surge_check",                   to: "api/surge_checks#create"

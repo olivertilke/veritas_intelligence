@@ -193,6 +193,7 @@
 
 .ndna-graph-canvas {
   flex: 1;
+  min-height: 180px;
   position: relative;
   overflow: hidden;
   background: radial-gradient(ellipse at center, rgba(0, 212, 255, 0.02) 0%, transparent 70%);
@@ -202,6 +203,154 @@
     height: 100%;
     display: block;
   }
+}
+
+// ---- Node Preview Panel (slides up from bottom on click) ----
+
+.ndna-node-preview {
+  flex-shrink: 0;
+  max-height: 0;
+  overflow: hidden;
+  border-top: 1px solid transparent;
+  transition:
+    max-height 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.3s ease;
+
+  &.ndna-node-preview--visible {
+    max-height: 280px;
+    border-top-color: $veritas-border;
+    overflow-y: auto;
+
+    &::-webkit-scrollbar       { width: 3px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb { background: $veritas-border; }
+  }
+}
+
+.ndna-preview {
+  padding: 14px 18px 16px;
+}
+
+.ndna-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.ndna-preview-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: $veritas-cyan;
+  text-transform: uppercase;
+}
+
+.ndna-preview-close {
+  background: none;
+  border: 1px solid $veritas-border;
+  color: $veritas-text-dim;
+  font-size: 0.65rem;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: all 0.15s ease;
+
+  &:hover {
+    color: $veritas-cyan;
+    border-color: rgba(0, 212, 255, 0.4);
+    background: rgba(0, 212, 255, 0.06);
+  }
+}
+
+.ndna-preview-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  color: $veritas-text-dim;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ndna-preview-source {
+  color: $veritas-text;
+  font-weight: 600;
+}
+
+.ndna-preview-framing {
+  font-size: 0.54rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+}
+
+.ndna-preview-confidence {
+  color: $veritas-text-dim;
+}
+
+.ndna-preview-headline {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: $veritas-white;
+  line-height: 1.3;
+  margin-bottom: 8px;
+}
+
+.ndna-preview-snippet {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  line-height: 1.65;
+  color: $veritas-text;
+  margin-bottom: 12px;
+  border-left: 2px solid $veritas-border;
+  padding-left: 10px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ndna-preview-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: $veritas-cyan;
+  text-decoration: none;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  padding: 5px 12px;
+  transition: all 0.15s ease;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.08);
+    border-color: rgba(0, 212, 255, 0.6);
+    color: $veritas-cyan;
+  }
+}
+
+.ndna-preview-no-article {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.62rem;
+  color: $veritas-text-dim;
+  font-style: italic;
+  padding: 4px 0 2px;
 }
 
 // ---- D3 Elements ----

@@ -57,12 +57,6 @@
                 </span>
               <% end %>
               <span class="feed-time"><%= time_ago_in_words(article.published_at) %> ago</span>
-              <button class="ndna-trigger-btn"
-                      data-action="click->feed-card#openDna"
-                      title="View Narrative DNA">◈ DNA</button>
-              <button class="tribunal-trigger-btn"
-                      data-action="click->feed-card#openTribunal"
-                      title="Open Intelligence Tribunal">⬟ TRIBUNAL</button>
               <%= link_to "→", article_path(article),
                     class: "feed-card-open-link",
                     data: { turbo: false, action: "click->feed-card#openArticle" } %>
@@ -72,15 +66,20 @@
           <!-- Headline -->
           <p class="feed-headline"><%= truncate(article.headline, length: 110) %></p>
 
-          <!-- Country + Coordinates Row -->
+          <!-- Country + Coordinates + Intelligence Actions Row -->
           <div class="d-flex justify-content-between align-items-center">
             <span class="feed-location">
               <i class="fa fa-map-marker-alt me-1"></i>
               <%= article.country.name %> [<%= article.country.iso_code %>]
             </span>
-            <span class="feed-coords">
-              <%= article.latitude.round(2) %>°, <%= article.longitude.round(2) %>°
-            </span>
+            <div class="d-flex align-items-center gap-1">
+              <button class="ndna-trigger-btn"
+                      data-action="click->feed-card#openDna"
+                      title="View Narrative DNA">◈ DNA</button>
+              <button class="tribunal-trigger-btn"
+                      data-action="click->feed-card#openTribunal"
+                      title="Open Intelligence Tribunal">⬟ TRIBUNAL</button>
+            </div>
           </div>
         </div>
       <% end %>
