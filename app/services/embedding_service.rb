@@ -4,6 +4,11 @@ class EmbeddingService
   end
 
   def generate(article)
+    # Demo mode: skip if article already has an embedding, never call external API
+    if VeritasMode.demo?
+      return article.embedding.present?
+    end
+
     # Ensure there's enough text to embed
     return false unless article.content.present? || article.ai_analysis&.summary.present?
 

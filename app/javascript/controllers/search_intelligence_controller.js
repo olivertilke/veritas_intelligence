@@ -116,20 +116,42 @@ export default class extends Controller {
     }))
   }
 
-  _handleFreshResults(data) {
+  async _handleFreshResults(data) {
     this._hideFetching()
-    const prevCount = parseInt(this.statusBadgeTarget?.dataset.cachedCount || "0", 10)
-    this._updateBadge(prevCount, data.new_articles_count || 0)
+    const newCount = data.new_articles_count || 0
+    const query    = data.query || this._currentQuery
 
-    if ((data.new_articles_count || 0) > 0) {
-      // Re-trigger globe to pick up newly-indexed articles
-      window.dispatchEvent(new CustomEvent("veritas:search", {
-        detail: { query: data.query || this._currentQuery }
-      }))
+    if (newCount > 0) {
+      // Re-fetch search results so the sidebar shows the newly saved articles
+      try {
+        const response = await fetch("/api/search", {
+          method:  "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || ""
+          },
+          body: JSON.stringify({ query })
+        })
+        if (response.ok) {
+          const freshData = await response.json()
+          this._renderSearchPanel(freshData.cached_results || [], freshData.query)
+          this._updateBadge(freshData.total_cached, newCount)
+        }
+      } catch (err) {
+        // Non-fatal — badge still shows new count
+        const prevCount = parseInt(this.statusBadgeTarget?.dataset.cachedCount || "0", 10)
+        this._updateBadge(prevCount, newCount)
+        console.warn("[SearchIntelligenceController] Re-fetch after fresh results failed:", err)
+      }
 
+      // Tell the globe to re-filter with newly indexed articles
+      window.dispatchEvent(new CustomEvent("veritas:search", { detail: { query } }))
       window.dispatchEvent(new CustomEvent("veritas:fresh-results", {
-        detail: { query: data.query, new_count: data.new_articles_count }
+        detail: { query, new_count: newCount }
       }))
+    } else {
+      const prevCount = parseInt(this.statusBadgeTarget?.dataset.cachedCount || "0", 10)
+      this._updateBadge(prevCount, 0)
     }
 
     this._unsubscribeFromChannel()

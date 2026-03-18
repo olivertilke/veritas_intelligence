@@ -9,6 +9,12 @@ class FreshIntelligenceJob < ApplicationJob
   queue_as :default
 
   def perform(query:, user_id: nil)
+    if VeritasMode.demo?
+      Rails.logger.info "[FreshIntelligenceJob] Demo mode — skipping live fetch for '#{query}'"
+      broadcast_completion(query, 0)
+      return
+    end
+
     Rails.logger.info "[FreshIntelligenceJob] Starting fetch for query: '#{query}'"
 
     # 1. Fetch from NewsAPI

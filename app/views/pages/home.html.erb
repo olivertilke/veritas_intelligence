@@ -91,20 +91,28 @@
 
     <!-- Globe control toggles -->
     <div class="vt-globe-toggles">
-      <button class="vt-heatmap-toggle"
+      <button class="vt-globe-toggle-btn vt-heatmap-toggle"
               data-controller="heatmap-toggle"
               data-heatmap-toggle-target="btn"
               data-action="click->heatmap-toggle#toggle"
               title="Toggle threat heatmap thermal layer">
-        <span class="vt-heatmap-toggle-icon">&#9608;</span>
+        <span class="vt-toggle-icon">&#9608;</span>
         <span data-heatmap-toggle-target="label">THERMAL</span>
       </button>
-      <button class="vt-daynight-toggle"
+      <button class="vt-globe-toggle-btn vt-daynight-toggle"
               data-controller="daynight-toggle"
               data-action="click->daynight-toggle#toggle"
               title="Toggle day/night globe view">
-        <span class="vt-daynight-icon">&#9788;</span>
-        <span class="vt-daynight-label" data-daynight-toggle-target="label">DAY</span>
+        <span class="vt-toggle-icon">&#9788;</span>
+        <span data-daynight-toggle-target="label">DAY</span>
+      </button>
+      <button class="vt-globe-toggle-btn vt-isolate-toggle"
+              data-controller="isolate-toggle"
+              data-isolate-toggle-target="btn"
+              data-action="click->isolate-toggle#toggle"
+              title="Hide isolated signals (no arcs)">
+        <span class="vt-toggle-icon">⊘</span>
+        <span data-isolate-toggle-target="label">ISOLATES</span>
       </button>
       <button class="vt-flat-toggle"
               data-map-toggle-target="btn"

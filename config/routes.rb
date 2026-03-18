@@ -24,6 +24,8 @@ Rails.application.routes.draw do
   get  "api/search_suggestions",            to: "api/search_suggestions#index"
   post "api/search",                        to: "api/search#create"
   post "api/surge_check",                   to: "api/surge_checks#create"
+  get  "api/mode",                           to: "api/mode#show"
+  post "api/mode/toggle",                    to: "api/mode#toggle"
 
   # -------------------------------------------------------
   # Read-only public resources

@@ -72,6 +72,7 @@ class NewsApiService
   # Fetches articles for an arbitrary user-supplied query string.
   # Used by FreshIntelligenceJob during live search.
   def fetch_by_query(query_string, max_results: 20)
+    return [] if VeritasMode.demo?
     return [] if @api_key.blank?
     return [] if api_limit_reached?
 

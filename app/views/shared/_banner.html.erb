@@ -36,23 +36,21 @@
         <form action="<%= search_path %>" method="get"
               class="d-flex align-items-center"
               data-action="submit->search-intelligence#submit">
-          <div class="input-group">
-            <span class="input-group-text bg-transparent border-info text-info" style="border-right: none;">
+          <div class="input-group vt-search-group">
+            <span class="input-group-text vt-search-addon">
               <i class="fa fa-search"></i>
             </span>
             <input type="text"
                    name="q"
                    data-search-intelligence-target="input"
-                   class="form-control bg-transparent border-info text-white shadow-none"
+                   class="form-control vt-search-input"
                    placeholder="Live Intelligence Search..."
                    value="<%= params[:q] %>"
-                   autocomplete="off"
-                   style="border-left: none; border-right: none; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;">
+                   autocomplete="off">
             <button type="button"
                     data-search-intelligence-target="clearBtn"
                     data-action="click->search-intelligence#clear"
-                    class="btn bg-transparent border-info text-secondary d-none"
-                    style="border-left: none; border-right: none; padding: 0 8px; font-size: 0.75rem;"
+                    class="btn vt-search-clear d-none"
                     title="Clear search">
               <i class="fa fa-times"></i>
             </button>
@@ -61,8 +59,7 @@
                rel="noopener noreferrer"
                data-turbo="false"
                data-search-intelligence-target="fullSearchLink"
-               class="btn btn-outline-info veritas-btn-outline"
-               style="border-left: none;"
+               class="btn vt-search-submit veritas-btn-outline"
                title="Open full search page in new tab">
               <i class="fa fa-arrow-right"></i>
             </a>
@@ -85,6 +82,19 @@
 
   <div class="d-flex align-items-center gap-4">
     <% unless controller_name == "pages" && action_name == "welcome" %>
+      <!-- Demo/Live Mode Toggle -->
+      <div data-controller="mode-toggle" class="d-none d-lg-flex align-items-center">
+        <button data-action="click->mode-toggle#toggle"
+                data-mode-toggle-target="badge"
+                class="veritas-mode-badge mode-demo"
+                title="Toggle between Demo and Live mode">
+          <span data-mode-toggle-target="dot" class="mode-dot mode-dot-demo"></span>
+          <span data-mode-toggle-target="label" class="mode-label">DEMO</span>
+        </button>
+        <span data-mode-toggle-target="apiCounter"
+              class="mode-api-counter d-none"></span>
+      </div>
+
       <!-- Briefings & Convergences (Hidden on Welcome) -->
       <!-- Entity Nexus Trigger -->
       <button class="nexus-navbar-btn d-none d-lg-flex"
@@ -103,8 +113,7 @@
       <% end %>
 
       <%= link_to briefings_path,
-            class: "d-none d-lg-flex align-items-center gap-2",
-            style: "text-decoration: none; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: #94a3b8; letter-spacing: 1px; transition: color 0.2s;",
+            class: "nexus-navbar-btn d-none d-lg-flex",
             data: { turbo: false } do %>
         <i class="fa fa-file-shield"></i>
         BRIEFINGS
@@ -112,13 +121,12 @@
 
       <% convergence_count = NarrativeConvergence.active.count rescue 0 %>
       <%= link_to narrative_convergences_path,
-            class: "d-none d-lg-flex align-items-center gap-2",
-            style: "text-decoration: none; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: #{convergence_count > 0 ? '#ef4444' : '#475569'}; letter-spacing: 1px; transition: color 0.2s;",
+            class: "nexus-navbar-btn d-none d-lg-flex #{'convergence-active' if convergence_count > 0}",
             data: { turbo: false } do %>
-        <i class="fa fa-radiation" style="<%= convergence_count > 0 ? 'animation: pulse 1.5s infinite;' : '' %>"></i>
+        <i class="fa fa-radiation<%= ' convergence-pulse' if convergence_count > 0 %>"></i>
         CONVERGENCES
         <% if convergence_count > 0 %>
-          <span style="background: #ef4444; color: white; font-size: 0.6rem; padding: 1px 5px; border-radius: 3px;"><%= convergence_count %></span>
+          <span class="vt-nav-count-badge"><%= convergence_count %></span>
         <% end %>
       <% end %>
 

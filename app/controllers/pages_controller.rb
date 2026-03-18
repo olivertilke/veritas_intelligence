@@ -105,6 +105,9 @@ class PagesController < ApplicationController
       .order(created_at: :desc)
       .group_by(&:region_id)
       .transform_values(&:first)
+
+    @veritas_mode = VeritasMode.current
+    @api_calls_remaining = VeritasMode.api_calls_remaining
   end
 
   # GET /api/globe_data — JSON feed for Globe.gl
@@ -120,21 +123,25 @@ class PagesController < ApplicationController
 
     # Filter by search query if provided
     if search_query.present?
-      # Use pgvector similarity search for semantic matching
-      begin
-        vector = OpenRouterClient.new.embed(search_query)
-        if vector.present?
-          # Get semantically similar articles
-          similar_ids = Article.nearest_neighbors(:embedding, vector, distance: "cosine")
-                               .limit(100)
-                               .pluck(:id)
-          scope = scope.where(id: similar_ids)
-        end
-      rescue StandardError => e
-        Rails.logger.warn "[globe_data] Semantic search failed: #{e.message}"
-        # Fallback to text search
+      if VeritasMode.demo?
+        # Demo mode: text search only — no external API calls
         scope = scope.where("headline ILIKE ?", "%#{search_query}%")
                      .or(scope.where("content ILIKE ?", "%#{search_query}%"))
+      else
+        # Live mode: use pgvector similarity search via OpenRouter embedding
+        begin
+          vector = OpenRouterClient.new.embed(search_query)
+          if vector.present?
+            similar_ids = Article.nearest_neighbors(:embedding, vector, distance: "cosine")
+                                 .limit(100)
+                                 .pluck(:id)
+            scope = scope.where(id: similar_ids)
+          end
+        rescue StandardError => e
+          Rails.logger.warn "[globe_data] Semantic search failed: #{e.message}"
+          scope = scope.where("headline ILIKE ?", "%#{search_query}%")
+                       .or(scope.where("content ILIKE ?", "%#{search_query}%"))
+        end
       end
     end
 
@@ -248,7 +255,11 @@ class PagesController < ApplicationController
       { lat: a.latitude, lng: a.longitude, weight: weight }
     end
 
-    render json: { points: points, arcs: arcs, regions: regions, heatmap: heatmap, heatmapClusters: heatmap_clusters }
+    render json: {
+      points: points, arcs: arcs, regions: regions,
+      heatmap: heatmap, heatmapClusters: heatmap_clusters,
+      mode: VeritasMode.current
+    }
   end
 
   # GET /api/article_preview/:article_id — Lightweight article card for DNA node click
@@ -363,29 +374,34 @@ class PagesController < ApplicationController
 
   def search
     @query = params[:q]
-    
+
     if @query.present?
-      begin
-        # 1. Embed the user's search query into a vector
-        vector = OpenRouterClient.new.embed(@query)
-        
-        if vector.present?
-          # nearest_neighbors must be called FIRST.
-          # Use .preload (not .includes) — includes triggers a COUNT subquery that
-          # conflicts with pgvector's AS neighbor_distance alias → SQL crash.
-          # Materialize with .to_a so the view never fires extra COUNT queries on the relation.
-          @results = Article.nearest_neighbors(:embedding, vector, distance: "cosine")
-                            .preload(:country, :region, :ai_analysis)
-                            .limit(20)
-                            .to_a
-        else
+      if VeritasMode.demo?
+        # Demo mode: text search only — zero API calls
+        @results = Article.where("headline ILIKE ?", "%#{@query}%")
+                          .or(Article.where("content ILIKE ?", "%#{@query}%"))
+                          .preload(:country, :region, :ai_analysis)
+                          .order(published_at: :desc)
+                          .limit(20)
+                          .to_a
+      else
+        begin
+          vector = OpenRouterClient.new.embed(@query)
+
+          if vector.present?
+            @results = Article.nearest_neighbors(:embedding, vector, distance: "cosine")
+                              .preload(:country, :region, :ai_analysis)
+                              .limit(20)
+                              .to_a
+          else
+            @results = []
+            flash.now[:alert] = "Failed to generate semantic search vector."
+          end
+        rescue StandardError => e
           @results = []
-          flash.now[:alert] = "Failed to generate semantic search vector."
+          flash.now[:alert] = "Search is temporarily unavailable."
+          Rails.logger.error "[SEMANTIC SEARCH] Error: #{e.message}"
         end
-      rescue StandardError => e
-        @results = []
-        flash.now[:alert] = "Search is temporarily unavailable."
-        Rails.logger.error "[SEMANTIC SEARCH] Error: #{e.message}"
       end
     else
       @results = []

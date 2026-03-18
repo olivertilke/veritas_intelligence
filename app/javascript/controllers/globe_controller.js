@@ -30,7 +30,10 @@ export default class extends Controller {
     this._breakingAlertHandler  = (e) => this._onBreakingAlert(e)
     this._viewModeHandler       = (e) => this._onViewModeChanged(e)
     this._heatmapToggleHandler  = (e) => this._onHeatmapToggle(e)
-    this._dayNightToggleHandler = (e) => this._onDayNightToggle(e)
+    this._dayNightToggleHandler  = (e) => this._onDayNightToggle(e)
+    this._modeChangedHandler     = (e) => this._onModeChanged(e)
+    this._isolateToggleHandler   = (e) => this._onIsolateToggle(e)
+    this._hideIsolated           = false
     window.addEventListener("veritas:flyTo",             this._flyToHandler)
     window.addEventListener("veritas:perspectiveChange", this._perspectiveHandler)
     window.addEventListener("veritas:timelineChange",    this._timelineHandler)
@@ -40,6 +43,8 @@ export default class extends Controller {
     window.addEventListener("veritas:view-mode-changed", this._viewModeHandler)
     window.addEventListener("veritas:heatmapToggle",     this._heatmapToggleHandler)
     window.addEventListener("veritas:dayNightToggle",    this._dayNightToggleHandler)
+    window.addEventListener("veritas:mode-changed",      this._modeChangedHandler)
+    window.addEventListener("veritas:isolateToggle",     this._isolateToggleHandler)
     this._initGlobe()
     this._subscription = consumer.subscriptions.create("GlobeChannel", {
       received:     (data) => this._onBroadcast(data),
@@ -63,6 +68,8 @@ export default class extends Controller {
     window.removeEventListener("veritas:view-mode-changed", this._viewModeHandler)
     window.removeEventListener("veritas:heatmapToggle",     this._heatmapToggleHandler)
     window.removeEventListener("veritas:dayNightToggle",    this._dayNightToggleHandler)
+    window.removeEventListener("veritas:mode-changed",      this._modeChangedHandler)
+    window.removeEventListener("veritas:isolateToggle",     this._isolateToggleHandler)
     clearTimeout(this._rotateTimer)
     if (this._heatmapPulseId) clearInterval(this._heatmapPulseId)
     if (this._heatmapTooltipEl) this._heatmapTooltipEl.remove()
@@ -377,12 +384,23 @@ export default class extends Controller {
       this._heatmapBaseData  = data.heatmap || []
       this._heatmapClusters  = data.heatmapClusters || []
 
+      // Store full datasets for isolate filter
+      this._allPoints = data.points || []
+      this._allArcs   = data.arcs || []
+
       if (this._heatmapActive) {
         this._globe.heatmapsData([this._heatmapBaseData])
       } else {
+        let visiblePoints = this._allPoints
+        if (this._hideIsolated) {
+          const connectedIds = new Set()
+          this._allArcs.forEach(arc => { if (arc.articleId) connectedIds.add(arc.articleId) })
+          visiblePoints = this._allPoints.filter(p => connectedIds.has(p.id))
+        }
+
         this._globe
-          .pointsData(data.points)
-          .arcsData(data.arcs)
+          .pointsData(visiblePoints)
+          .arcsData(this._allArcs)
           .ringsData(rings)
 
         if (this._globe) this._updatePackets()
@@ -897,6 +915,37 @@ export default class extends Controller {
     }
   }
 
+  _onModeChanged(event) {
+    // Mode toggled (demo ↔ live) — re-fetch globe data
+    this._loadData()
+  }
+
+  _onIsolateToggle() {
+    this._hideIsolated = !this._hideIsolated
+
+    if (this._globe && !this._heatmapActive) {
+      // Re-apply filter to current data without re-fetching
+      const allPoints = this._allPoints || []
+      const allArcs   = this._allArcs || []
+
+      if (this._hideIsolated) {
+        // Build set of point IDs that participate in at least one arc
+        const connectedIds = new Set()
+        allArcs.forEach(arc => {
+          if (arc.articleId) connectedIds.add(arc.articleId)
+        })
+        const filtered = allPoints.filter(p => connectedIds.has(p.id))
+        this._globe.pointsData(filtered)
+      } else {
+        this._globe.pointsData(allPoints)
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent("veritas:isolateState", {
+      detail: { active: this._hideIsolated }
+    }))
+  }
+
   _onViewModeChanged(event) {
     const { mode } = event.detail
     if (mode === "all") {
@@ -948,6 +997,10 @@ export default class extends Controller {
       this._heatmapBaseData = data.heatmap || []
       this._heatmapClusters = data.heatmapClusters || []
 
+      // Store full datasets for isolate filter
+      this._allPoints = data.points || []
+      this._allArcs   = data.arcs || []
+
       if (this._heatmapActive) {
         this._globe.heatmapsData([this._heatmapBaseData])
       } else {
@@ -956,9 +1009,16 @@ export default class extends Controller {
           ...(THREAT_RING[parseInt(r.threat, 10)] || THREAT_RING[1])
         }))
 
+        let visiblePoints = this._allPoints
+        if (this._hideIsolated) {
+          const connectedIds = new Set()
+          this._allArcs.forEach(arc => { if (arc.articleId) connectedIds.add(arc.articleId) })
+          visiblePoints = this._allPoints.filter(p => connectedIds.has(p.id))
+        }
+
         this._globe
-          .pointsData(data.points || [])
-          .arcsData(data.arcs || [])
+          .pointsData(visiblePoints)
+          .arcsData(this._allArcs)
           .ringsData(rings)
 
         if (this._packetGroup) this._packetGroup.visible = true
