@@ -25,6 +25,7 @@ class PagesController < ApplicationController
     @latest_snapshot = EmbeddingSnapshot.recent.first
     @total_articles = Article.joins(:ai_analysis).where(ai_analyses: { analysis_status: "complete" }).count
     @total_sources = SourceCredibility.count
+    @total_sources = Article.distinct.count(:source_name) if @total_sources.zero?
     @confidence_map = AiAnalysis.where(analysis_status: "complete")
                                 .where.not(geopolitical_topic: [nil, ""])
                                 .group(:geopolitical_topic)
@@ -39,12 +40,20 @@ class PagesController < ApplicationController
     @total_entities = Entity.count
     @total_entity_mentions = EntityMention.count
     @top_entity = Entity.order(mentions_count: :desc).first
+    # If counter cache is 0 (fresh seed), fall back to entity with most articles
+    if @top_entity&.mentions_count&.zero?
+      @top_entity = Entity.left_joins(:entity_mentions)
+                          .group(:id)
+                          .order("COUNT(entity_mentions.id) DESC")
+                          .first
+      @total_entity_mentions = EntityMention.count
+    end
     @top_signature = @signatures.first
     @entity_types_breakdown = Entity.group(:entity_type).count
 
-    # System age & learning rate
-    first_article = Article.order(:created_at).limit(1).pick(:created_at)
-    @system_age_hours = first_article ? ((Time.current - first_article) / 1.hour).round : 0
+    # System age & learning rate — use published_at so freshly seeded data still shows real span
+    earliest = Article.minimum(:published_at) || Article.minimum(:created_at)
+    @system_age_hours = earliest ? ((Time.current - earliest) / 1.hour).round : 0
     @articles_per_day = (@total_articles.to_f / [(@system_age_hours / 24.0).ceil, 1].max).round(1)
 
     # Knowledge gaps
@@ -429,6 +438,7 @@ class PagesController < ApplicationController
   def build_aware_narration
     total_articles = Article.joins(:ai_analysis).where(ai_analyses: { analysis_status: "complete" }).count
     total_sources  = SourceCredibility.count
+    total_sources  = Article.distinct.count(:source_name) if total_sources.zero?
     signatures     = NarrativeSignature.active.recent.limit(5)
     top_signature  = signatures.first
     top_entity     = Entity.order(mentions_count: :desc).first
@@ -436,8 +446,8 @@ class PagesController < ApplicationController
     total_contradictions = ContradictionLog.count
     latest_brief   = IntelligenceBrief.complete.latest.first
 
-    first_article = Article.order(:created_at).limit(1).pick(:created_at)
-    system_age_hours = first_article ? ((Time.current - first_article) / 1.hour).round : 0
+    earliest = Article.minimum(:published_at) || Article.minimum(:created_at)
+    system_age_hours = earliest ? ((Time.current - earliest) / 1.hour).round : 0
 
     blind_spots = latest_brief&.blind_spots&.map { |bs| bs["region"] }&.compact || []
 
@@ -445,7 +455,14 @@ class PagesController < ApplicationController
     parts << "I have processed... #{total_articles} articles... across #{total_sources} sources... in #{system_age_hours} hours of operation."
     parts << "I recognize... #{signatures.size} recurring narrative patterns." if signatures.any?
     parts << "My strongest signal... is #{top_signature.label}... #{top_signature.match_count} articles... and growing." if top_signature
-    parts << "I track #{total_entities} entities... #{top_entity.name}... appears most frequently... across #{top_entity.mentions_count} mentions." if top_entity
+    if top_entity
+      mention_count = top_entity.mentions_count.to_i > 0 ? top_entity.mentions_count : EntityMention.where(entity: top_entity).count
+      if mention_count > 0
+        parts << "I track #{total_entities} entities... #{top_entity.name}... appears most frequently... across #{mention_count} mentions."
+      else
+        parts << "I track #{total_entities} entities across my intelligence corpus."
+      end
+    end
     parts << "I have caught... #{total_contradictions} contradictions... between sources." if total_contradictions > 0
     parts << "I have #{blind_spots.size} blind spots... Regions I cannot yet... adequately cover." if blind_spots.any?
     parts << "My last intelligence assessment... was #{ActionController::Base.helpers.time_ago_in_words(latest_brief.created_at)} ago." if latest_brief
