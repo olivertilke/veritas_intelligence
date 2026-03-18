@@ -446,7 +446,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_18_092119) do
     t.index ["key"], name: "index_solid_queue_semaphores_on_key", unique: true
   end
 
-<<<<<<< vince/Veritas_becomes_self_aware
   create_table "source_credibilities", force: :cascade do |t|
     t.float "anomaly_rate", default: 0.0
     t.integer "articles_analyzed", default: 0, null: false
@@ -465,7 +464,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_18_092119) do
     t.index ["credibility_grade"], name: "index_source_credibilities_on_credibility_grade"
     t.index ["rolling_trust_score"], name: "index_source_credibilities_on_rolling_trust_score"
     t.index ["source_name"], name: "index_source_credibilities_on_source_name", unique: true
-=======
+  end
+
   create_table "telegram_channels", force: :cascade do |t|
     t.string "channel_id", null: false
     t.datetime "created_at", null: false
@@ -476,7 +476,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_18_092119) do
     t.datetime "updated_at", null: false
     t.string "username"
     t.index ["channel_id"], name: "index_telegram_channels_on_channel_id", unique: true
->>>>>>> master
   end
 
   create_table "user_model_configs", force: :cascade do |t|
