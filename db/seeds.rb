@@ -89,7 +89,7 @@ def news_api_articles
   return [] if ENV["NEWS_API_KEY"].blank?
 
   puts "Fetching up to 300 demo articles from NewsAPI..."
-  NewsApiService.new.fetch_demo_batch(limit: 300)
+  NewsApiService.new.fetch_demo_batch(limit: 300, max_pages_per_query: 1)
 end
 
 def fallback_articles(created_regions, count:)
