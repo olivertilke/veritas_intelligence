@@ -1,6 +1,6 @@
 class PagesController < ApplicationController
   DEFAULT_ARC_COLOR = "#00f0ff".freeze
-  skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search, :narrative_dna, :tribunal, :article_preview]
+  skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search, :narrative_dna, :tribunal, :article_preview, :entity_nexus, :entity_nexus_detail]
 
   def welcome
     redirect_to dashboard_path if user_signed_in?
@@ -127,7 +127,7 @@ class PagesController < ApplicationController
       article_count = c.attributes['article_count'].to_i
       threat = [article_count, 10].min
       coords = country_coordinates[c.iso_code] || [0.0, 0.0]
-      
+
       {
         lat:    coords[0],
         lng:    coords[1],
@@ -138,7 +138,52 @@ class PagesController < ApplicationController
       }
     end
 
-    render json: { points: points, arcs: arcs, regions: regions }
+    # Heatmap cluster summaries — per-country intel for thermal tooltip
+    heatmap_clusters = countries_with_articles.first(15).map do |c|
+      coords = country_coordinates[c.iso_code] || [0.0, 0.0]
+      country_articles = filtered_articles.select { |a| a.country_id == c.id }
+      avg_threat = if country_articles.any?
+                     threats = country_articles.filter_map { |a| a.ai_analysis&.threat_level&.to_i }
+                     threats.any? ? (threats.sum.to_f / threats.size).round(1) : 0
+                   else
+                     0
+                   end
+      top_headlines = country_articles
+        .sort_by { |a| -(a.ai_analysis&.threat_level.to_i) }
+        .first(3)
+        .map { |a| { headline: a.headline.truncate(80), source: a.source_name } }
+
+      {
+        lat:          coords[0],
+        lng:          coords[1],
+        name:         c.name,
+        iso:          c.iso_code,
+        articleCount: c.attributes['article_count'].to_i,
+        avgThreat:    avg_threat,
+        topHeadlines: top_headlines
+      }
+    end
+
+    # Heatmap data: one entry per geolocated article, weight = threat intensity
+    # Base weight 0.4 ensures even unevaluated articles show up on the thermal layer.
+    heatmap = filtered_articles.first(200).filter_map do |a|
+      next if a.latitude.blank? || a.longitude.blank?
+
+      threat = a.ai_analysis&.threat_level.to_f   # 0–10 (nil → 0)
+      trust  = a.ai_analysis&.trust_score.to_f    # 0–100 (nil → 0, treated as unknown)
+
+      # Articles without AI analysis get a base heat of 0.4 (visible but not alarming).
+      # Articles with analysis: high threat + low trust → hot.
+      if a.ai_analysis.nil?
+        weight = 0.4
+      else
+        weight = ((threat / 10.0) * 0.65 + ((100.0 - trust) / 100.0) * 0.35).clamp(0.2, 1.0)
+      end
+
+      { lat: a.latitude, lng: a.longitude, weight: weight }
+    end
+
+    render json: { points: points, arcs: arcs, regions: regions, heatmap: heatmap, heatmapClusters: heatmap_clusters }
   end
 
   # GET /api/article_preview/:article_id — Lightweight article card for DNA node click
@@ -172,6 +217,74 @@ class PagesController < ApplicationController
 
     data = TribunalService.new(article).call
     render json: data
+  end
+
+  # GET /api/entity_nexus — Force-directed graph JSON for Entity Nexus panel
+  def entity_nexus
+    service = EntityNexusService.new(
+      min_mentions: (params[:min_mentions] || 1).to_i,
+      entity_type:  params[:entity_type].presence,
+      article_id:   params[:article_id].presence
+    )
+    render json: service.call
+  end
+
+  # GET /api/entity_nexus/:entity_id — Detail JSON for a single entity node
+  def entity_nexus_detail
+    entity = Entity.find_by(id: params[:entity_id])
+    return render json: { error: "Not found" }, status: :not_found unless entity
+
+    articles = entity.articles
+      .includes(:ai_analysis, :country)
+      .order(published_at: :desc)
+      .limit(8)
+
+    # Top connected entities via raw SQL — avoids COUNT(*) pluck issues
+    article_ids = entity.article_ids.first(50)
+    connected = if article_ids.any?
+      rows = ActiveRecord::Base.connection.execute(<<~SQL)
+        SELECT e.id, e.name, e.entity_type, COUNT(*) AS shared_count
+        FROM entity_mentions em
+        JOIN entities e ON e.id = em.entity_id
+        WHERE em.article_id IN (#{article_ids.map(&:to_i).join(',')})
+          AND em.entity_id != #{entity.id.to_i}
+        GROUP BY e.id, e.name, e.entity_type
+        ORDER BY shared_count DESC
+        LIMIT 5
+      SQL
+      rows.map { |r| { id: r["id"].to_i, name: r["name"], entity_type: r["entity_type"], shared_articles: r["shared_count"].to_i } }
+    else
+      []
+    end
+
+    sentiment_breakdown = compute_sentiment_breakdown(entity)
+    max_mentions = Entity.maximum(:mentions_count).to_f
+    vol_score    = max_mentions > 0 ? (entity.mentions_count.to_f / max_mentions) : 0
+    power_index  = (vol_score * 60).round  # simplified — full calc needs region/threat data
+
+    render json: {
+      id:                 entity.id,
+      name:               entity.name,
+      entity_type:        entity.entity_type,
+      color:              entity.color,
+      mentions_count:     entity.mentions_count,
+      power_index:        power_index,
+      first_seen_at:      entity.first_seen_at&.iso8601,
+      connected_entities: connected,
+      articles: articles.map { |a| {
+        id:              a.id,
+        headline:        a.headline,
+        source_name:     a.source_name,
+        published_at:    a.published_at&.iso8601,
+        country:         a.country&.name,
+        threat_level:    a.ai_analysis&.threat_level,
+        sentiment_color: a.ai_analysis&.sentiment_color || "#6b7280"
+      }},
+      sentiment: sentiment_breakdown
+    }
+  rescue StandardError => e
+    Rails.logger.error "[EntityNexusDetail] ##{params[:entity_id]}: #{e.class} #{e.message}"
+    render json: { error: "Internal error" }, status: :internal_server_error
   end
 
   # GET /api/narrative_dna/:article_id — Graph JSON for Narrative DNA panel
@@ -216,18 +329,46 @@ class PagesController < ApplicationController
 
   private
 
+  def compute_sentiment_breakdown(entity)
+    labels = entity.articles
+      .joins(:ai_analysis)
+      .where.not(ai_analyses: { sentiment_label: nil })
+      .pluck("ai_analyses.sentiment_label")
+      .map { |l| l.to_s.downcase }
+
+    total = labels.size.to_f
+    return { positive: 0, neutral: 0, negative: 0 } if total.zero?
+
+    positive = labels.count { |l| l.include?("positive") || l.include?("bullish") }
+    negative = labels.count { |l| l.include?("negative") || l.include?("bearish") || l.include?("hostile") }
+    neutral  = labels.size - positive - negative
+
+    {
+      positive: (positive / total * 100).round,
+      neutral:  (neutral  / total * 100).round,
+      negative: (negative / total * 100).round
+    }
+  end
+
   def build_route_segments(filtered_articles, perspective, to_time)
-    # Fetch narrative routes with their hops, filtered by time and perspective
-    scope = NarrativeRoute.joins(narrative_arc: :article)
-                          .includes(narrative_arc: { article: :ai_analysis })
-                          .where.not(hops: nil)
-                          .order("narrative_routes.created_at DESC")
-    
+    filtered_ids = filtered_articles.map(&:id)
+
+    # Resolve arc IDs first — avoids JOIN ambiguity from combines includes+joins
+    arc_ids = NarrativeArc.where(article_id: filtered_ids).pluck(:id)
+
+    # Fetch narrative routes restricted to the filtered arc set
+    scope = NarrativeRoute
+      .where(narrative_arc_id: arc_ids)
+      .joins(narrative_arc: :article)
+      .includes(narrative_arc: { article: :ai_analysis })
+      .where.not(hops: nil)
+      .order("narrative_routes.created_at DESC")
+
     # Filter by timestamp if provided
     if to_time
       scope = scope.where("articles.published_at <= ?", to_time)
     end
-    
+
     # Filter by perspective if provided
     if perspective
       scope = scope.select do |route|
@@ -276,11 +417,14 @@ class PagesController < ApplicationController
   end
 
   def build_globe_arcs(filtered_articles, perspective, to_time)
+    filtered_ids = filtered_articles.map(&:id)
+
     # 1. Flow arcs (auto-generated from article sequence)
     flow_arcs = build_article_flow_arcs(filtered_articles, perspective)
 
-    # 2. Database arcs (seeded NarrativeArcs)
+    # 2. Database arcs (seeded NarrativeArcs) — restricted to filtered article set
     scope = NarrativeArc.includes(article: :ai_analysis).order(:id)
+    scope = scope.where(article_id: filtered_ids) if filtered_ids.any?
     scope = scope.joins(:article).where("articles.published_at <= ?", to_time) if to_time
 
     db_arcs = if perspective

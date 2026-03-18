@@ -1,6 +1,6 @@
 <!-- VERITAS War Room -->
 <div class="veritas-war-room"
-     data-controller="narrative-dna tribunal">
+     data-controller="narrative-dna tribunal entity-nexus">
 
 <!-- Perspective Selector Bar -->
 <div class="veritas-perspective-bar"
@@ -39,6 +39,20 @@
 
   <!-- LEFT SIDEBAR: Live Intelligence Feed -->
   <aside class="veritas-feed-sidebar mobile-hidden">
+
+    <!-- Search Results Panel: hidden until a search fires veritas:search-results -->
+    <div id="intel-search-panel" class="d-none">
+      <div class="veritas-panel-header" style="border-color: rgba(0,240,255,0.25);">
+        <span class="panel-icon" style="color: #00f0ff;">◉</span>
+        <span class="panel-title" id="intel-search-header" style="color: #00f0ff;">SEARCH RESULTS</span>
+        <span class="panel-badge" id="intel-search-count" style="background: rgba(0,240,255,0.12); color: #00f0ff;">0</span>
+      </div>
+      <div id="intel-search-results" class="veritas-feed-list"
+           style="border-bottom: 1px solid rgba(0,240,255,0.12); margin-bottom: 6px; padding-bottom: 6px;">
+        <%# Populated by search_intelligence_controller.js %>
+      </div>
+    </div>
+
     <div class="veritas-panel-header">
       <span class="panel-icon">🔥</span>
       <span class="panel-title">HIGH‑THREAT SIGNALS</span>
@@ -54,7 +68,46 @@
   </aside>
 
   <!-- CENTER: 3D Globe (Globe.gl) -->
-  <section class="veritas-globe-section">
+  <section class="veritas-globe-section" style="position: relative;">
+
+    <!-- Search/All Intel view toggle — hidden until search is active -->
+    <div id="intel-view-toggle"
+         class="d-none"
+         data-controller="view-toggle"
+         style="position: absolute; top: 12px; right: 12px; z-index: 100;">
+      <div class="d-flex" style="background: rgba(10,12,20,0.88); border: 1px solid rgba(0,240,255,0.3); border-radius: 20px; padding: 3px; gap: 2px; backdrop-filter: blur(10px);">
+        <button data-action="click->view-toggle#setSearch"
+                data-view-toggle-target="searchBtn"
+                style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; padding: 4px 12px; border-radius: 16px; border: none; background: #00f0ff; color: #0a0c14; letter-spacing: 0.06em; cursor: pointer; transition: all 0.2s;">
+          SEARCH
+        </button>
+        <button data-action="click->view-toggle#setAll"
+                data-view-toggle-target="allBtn"
+                style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; padding: 4px 12px; border-radius: 16px; border: none; background: transparent; color: #64748b; letter-spacing: 0.06em; cursor: pointer; transition: all 0.2s;">
+          ALL INTEL
+        </button>
+      </div>
+    </div>
+
+    <!-- Globe control toggles -->
+    <div class="vt-globe-toggles">
+      <button class="vt-heatmap-toggle"
+              data-controller="heatmap-toggle"
+              data-heatmap-toggle-target="btn"
+              data-action="click->heatmap-toggle#toggle"
+              title="Toggle threat heatmap thermal layer">
+        <span class="vt-heatmap-toggle-icon">&#9608;</span>
+        <span data-heatmap-toggle-target="label">THERMAL</span>
+      </button>
+      <button class="vt-daynight-toggle"
+              data-controller="daynight-toggle"
+              data-action="click->daynight-toggle#toggle"
+              title="Toggle day/night globe view">
+        <span class="vt-daynight-icon">&#9788;</span>
+        <span class="vt-daynight-label" data-daynight-toggle-target="label">DAY</span>
+      </button>
+    </div>
+
     <div class="veritas-crosshair top"></div>
     <div class="veritas-crosshair bottom"></div>
     <div class="veritas-crosshair left"></div>
