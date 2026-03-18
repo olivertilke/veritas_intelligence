@@ -145,6 +145,11 @@ def seed_articles!(created_regions)
   live_articles = news_api_articles
   created = 0
 
+  # Suppress ActionCable broadcasts during seeding — SolidCable's insert
+  # can fail with "No unique index found for id" before schema cache warms.
+  Article.skip_callback(:commit, :after, :broadcast_sidebar_update)
+  Article.skip_callback(:commit, :after, :broadcast_to_globe)
+
   if live_articles.any?
     puts "NewsAPI returned #{live_articles.size} articles. Importing..."
 
@@ -152,7 +157,7 @@ def seed_articles!(created_regions)
       Article.create!(attrs)
       created += 1
     rescue StandardError => e
-      Rails.logger.warn "[db:seed] Skipping article #{attrs[:source_url]}: #{e.class} #{e.message}"
+      puts "[db:seed] Skipping article #{attrs[:source_url]}: #{e.class} #{e.message}"
     end
   else
     puts "NewsAPI unavailable or returned no articles."
@@ -164,9 +169,12 @@ def seed_articles!(created_regions)
     fallback_articles(created_regions, count: remaining).each do |attrs|
       Article.create!(attrs)
     rescue StandardError => e
-      Rails.logger.warn "[db:seed] Failed fallback article #{attrs[:source_url]}: #{e.class} #{e.message}"
+      puts "[db:seed] Failed fallback article #{attrs[:source_url]}: #{e.class} #{e.message}"
     end
   end
+
+  Article.set_callback(:commit, :after, :broadcast_sidebar_update)
+  Article.set_callback(:commit, :after, :broadcast_to_globe)
 
   puts "Creating initial AI Analyses for demo articles..."
   Article.find_each do |a|
