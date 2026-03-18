@@ -49,6 +49,20 @@ class IntelligenceSearchService
   private
 
   def semantic_search
+    if VeritasMode.demo?
+      # Demo mode: text search against existing DB — no external API calls
+      results = Article
+        .where("headline ILIKE ? OR content ILIKE ?", "%#{@query}%", "%#{@query}%")
+        .preload(:country, :region, :ai_analysis)
+        .order(published_at: :desc)
+        .limit(30)
+        .to_a
+
+      fresh_cutoff = 48.hours.ago
+      fresh_count  = results.count { |a| a.published_at&.> fresh_cutoff }
+      return [results, fresh_count]
+    end
+
     vector = OpenRouterClient.new.embed(@query)
 
     unless vector.present?
@@ -79,6 +93,12 @@ class IntelligenceSearchService
   end
 
   def maybe_enqueue_fresh_fetch(fresh_count)
+    # Demo mode: never enqueue fresh fetches
+    if VeritasMode.demo?
+      Rails.logger.info "[IntelligenceSearchService] Demo mode — skipping fresh fetch"
+      return [false, nil]
+    end
+
     # Don't burn API calls if the topic is well-covered with recent data
     if fresh_count >= FRESH_RESULTS_CACHE_THRESHOLD
       Rails.logger.info "[IntelligenceSearchService] #{fresh_count} fresh results found — skipping NewsAPI fetch"

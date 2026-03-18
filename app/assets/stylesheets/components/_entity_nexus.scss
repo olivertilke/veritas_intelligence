@@ -686,21 +686,52 @@
   align-items: center;
   gap: 5px;
   background: none;
-  border: 1px solid rgba(167, 139, 250, 0.25);
-  color: #a78bfa;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 2px;
+  color: #64748b;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   padding: 4px 10px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  text-decoration: none;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
 
   &:hover {
-    background: rgba(167, 139, 250, 0.08);
-    border-color: rgba(167, 139, 250, 0.5);
+    background: rgba(167, 139, 250, 0.07);
+    border-color: rgba(167, 139, 250, 0.45);
+    color: #a78bfa;
   }
+}
+
+// Convergence active state
+.nexus-navbar-btn.convergence-active {
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+
+  &:hover {
+    border-color: rgba(239, 68, 68, 0.6);
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.06);
+  }
+}
+
+.convergence-pulse {
+  animation: pulse 1.5s infinite;
+}
+
+.vt-nav-count-badge {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 2px;
+  line-height: 1.4;
 }
 
 // ---- Feed Card Trigger Button ----

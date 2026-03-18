@@ -17,6 +17,12 @@ class ApplicationController < ActionController::Base
     redirect_back(fallback_location: root_path)
   end
 
+  def require_admin!
+    unless user_signed_in? && current_user.admin?
+      render json: { error: "Unauthorized — admin access required" }, status: :forbidden
+    end
+  end
+
   def layout_by_resource
     if devise_controller?
       "devise"
