@@ -1,4 +1,5 @@
 require "securerandom"
+require_relative "seeds/demo_articles"
 
 # Suppress ActionCable broadcasts for the entire seed — no users are connected
 # and SolidCable's insert fails with "No unique index found for id".
@@ -166,50 +167,44 @@ def news_api_articles
 end
 
 def fallback_articles(created_regions, count:)
-  sources = [
-    "Reuters", "BBC", "Associated Press", "Bloomberg", "Financial Times",
-    "Al Jazeera", "Fox News", "CNN", "Xinhua", "RT"
-  ]
+  # Build lookup tables for region/country resolution
+  region_lookup = {}
+  country_lookup = {}
+  created_regions.each do |name, data|
+    region_lookup[name] = data
+    data[:region].countries.each { |c| country_lookup[c.iso_code] = c } if data[:region].respond_to?(:countries)
+  end
+  # Also look up countries from DB if not in the hash
+  Country.find_each { |c| country_lookup[c.iso_code] ||= c }
 
-  story_templates = [
-    "Oil shipping routes face renewed pressure after regional escalation",
-    "Cyber campaign targets transport infrastructure across allied states",
-    "Military drills trigger diplomatic backlash in contested waters",
-    "Election narrative intensifies as rival blocs accuse each other of manipulation",
-    "Trade restrictions deepen strategic tensions between major powers",
-    "Satellite imagery fuels speculation over troop movements near border zones",
-    "Sanctions debate reshapes alliance messaging across multiple capitals",
-    "State media push diverging narratives after overnight strike reports",
-    "Supply chain chokepoints raise fears of coordinated economic pressure",
-    "Intelligence officials warn of narrative amplification across proxy outlets"
-  ]
+  # Use curated DEMO_ARTICLES, cycling if more than 50 needed
+  DEMO_ARTICLES.cycle.take(count).each_with_index.map do |template, idx|
+    geo = region_lookup[template[:region_name]] || created_regions.values.sample
+    country = country_lookup[template[:country_iso]] || geo[:country]
 
-  created_regions.values.cycle.take(count).each_with_index.map do |geo, idx|
-    headline = "#{story_templates[idx % story_templates.length]} ##{idx + 1}"
-    source   = sources[idx % sources.length]
-    time     = Time.current - ((idx % 72) * 1.hour)
-    body     = <<~HTML
-      <p>DEMO INTELLIGENCE SIGNAL</p>
-      <p>#{headline}</p>
-      <p>
-        This fallback article exists to keep the VERITAS demo operational when live NewsAPI
-        coverage is thin. It is a seeded narrative signal associated with #{geo[:region].name}
-        and source profile #{source}.
-      </p>
-    HTML
+    # Spread articles over 7 days for timeline slider variety
+    time = Time.current - (idx * 3.36.hours) # ~50 articles over 7 days
 
     {
-      headline:       headline,
+      headline:       template[:headline],
       source_url:     nil,
-      source_name:    source,
-      content:        body,
+      source_name:    template[:source_name],
+      content:        template[:content],
       published_at:   time,
       fetched_at:     Time.current,
       latitude:       geo[:region].latitude + rand(-2.0..2.0),
       longitude:      geo[:region].longitude + rand(-2.0..2.0),
-      country:        geo[:country],
+      country:        country,
       region:         geo[:region],
-      raw_data:       { "seed_mode" => "fallback_demo", "source" => source, "description" => headline }
+      raw_data:       {
+        "seed_mode"   => "fallback_demo",
+        "source"      => template[:source_name],
+        "description" => template[:headline],
+        "topic"       => template[:topic],
+        "sentiment"   => template[:sentiment],
+        "threat"      => template[:threat],
+        "trust"       => template[:trust]
+      }
     }
   end
 end
@@ -231,9 +226,10 @@ def seed_articles!(created_regions)
     puts "NewsAPI unavailable or returned no articles."
   end
 
-  remaining = [300 - created, 0].max
+  target = created > 0 ? 300 : DEMO_ARTICLES.size  # Use curated set size when no API
+  remaining = [target - created, 0].max
   if remaining.positive?
-    puts "Backfilling #{remaining} deterministic demo articles so the app is demo-ready..."
+    puts "Backfilling #{remaining} curated demo articles so the app is demo-ready..."
     fallback_articles(created_regions, count: remaining).each do |attrs|
       Article.create!(attrs)
     rescue StandardError => e
@@ -242,18 +238,55 @@ def seed_articles!(created_regions)
   end
 
   puts "Creating initial AI Analyses for demo articles..."
+
+  # Build a lookup from headline to template for curated data
+  template_lookup = DEMO_ARTICLES.index_by { |t| t[:headline] }
+
   Article.find_each do |a|
-    threat = rand(1..3)
-    trust = rand(60..98)
-    label = ['Bullish', 'Bearish', 'Neutral'].sample
+    template = template_lookup[a.headline]
+
+    # Use curated values from template if available, otherwise generate
+    if template
+      threat  = template[:threat]
+      trust   = template[:trust]
+      label   = template[:sentiment]
+      topic   = template[:topic]
+      summary = template[:summary]
+    else
+      # Fallback for NewsAPI or extra articles: use raw_data hints or randomize
+      raw = a.raw_data || {}
+      threat  = raw["threat"] || rand(1..3)
+      trust   = raw["trust"] || rand(60..98)
+      label   = raw["sentiment"] || ['Bullish', 'Bearish', 'Neutral'].sample
+      topic   = raw["topic"] || ["Military", "Trade", "Diplomacy", "Cyber"].sample
+      summary = "Intelligence assessment for #{a.source_name}: #{a.headline}"
+    end
+
     color = case label
             when 'Bullish' then '#22c55e'
             when 'Bearish' then '#ef4444'
             else '#38bdf8'
             end
 
-    analyst_trust = [[trust + rand(-5..5), 100].min, 1].max
-    sentinel_trust = [[trust + rand(-8..8), 100].min, 1].max
+    # Derive bias direction from source reputation
+    bias = case a.source_name
+           when "Fox News", "Breitbart", "Daily Wire" then "RIGHT"
+           when "CNN", "MSNBC", "New York Times", "Washington Post", "The Guardian" then "LEFT"
+           when "RT", "TASS", "Sputnik", "Xinhua", "Global Times" then "STATE"
+           else "CENTER"
+           end
+
+    analyst_trust = [[trust + rand(-3..3), 100].min, 1].max
+    sentinel_trust = [[trust + rand(-5..5), 100].min, 1].max
+    anomaly = trust < 60 || %w[RT TASS Sputnik Xinhua].include?(a.source_name) ? true : [true, false, false].sample
+
+    agreement = if (analyst_trust - sentinel_trust).abs <= 5
+                  "FULL_CONSENSUS"
+                elsif (analyst_trust - sentinel_trust).abs <= 15
+                  "PARTIAL_AGREEMENT"
+                else
+                  "SIGNIFICANT_DISAGREEMENT"
+                end
 
     a.create_ai_analysis!(
       threat_level: threat.to_s,
@@ -261,28 +294,28 @@ def seed_articles!(created_regions)
       sentiment_label: label,
       sentiment_color: color,
       analysis_status: 'complete',
-      summary: "AI generated summary for #{a.headline}",
+      summary: summary,
       analyst_response: {
         "trust_score" => analyst_trust,
         "sentiment_label" => label,
-        "geopolitical_topic" => ["Military", "Trade", "Diplomacy", "Cyber"].sample,
+        "geopolitical_topic" => topic,
         "threat_level" => threat.to_s,
-        "reasoning" => "Initial automated analyst scan complete."
+        "reasoning" => "Analyst assessment: #{summary}"
       },
       sentinel_response: {
         "independent_trust_score" => sentinel_trust,
-        "bias_direction" => ["LEFT", "RIGHT", "CENTER", "NEUTRAL"].sample,
-        "linguistic_anomaly_flag" => [true, false].sample,
+        "bias_direction" => bias,
+        "linguistic_anomaly_flag" => anomaly,
         "independent_threat_assessment" => threat.to_s,
-        "reasoning" => "Initial automated forensic scan complete."
+        "reasoning" => "Forensic scan of #{a.source_name} content. Bias direction: #{bias}. #{anomaly ? 'Linguistic anomalies detected — possible coordinated framing.' : 'No significant linguistic anomalies.'}"
       },
       arbiter_response: {
-        "agreement_level" => ["FULL_CONSENSUS", "PARTIAL_AGREEMENT", "SIGNIFICANT_DISAGREEMENT"].sample,
+        "agreement_level" => agreement,
         "final_trust_score" => trust,
         "final_threat_level" => threat.to_s,
-        "final_summary" => "Cross-verified intelligence assessment for #{a.source_name}. Consensus reached on threat posture and narrative framing.",
-        "linguistic_anomaly_flag" => [true, false].sample,
-        "arbitration_notes" => "Both agents evaluated independently. Weighted judgment applied based on source credibility and bias indicators."
+        "final_summary" => summary,
+        "linguistic_anomaly_flag" => anomaly,
+        "arbitration_notes" => "Cross-verification complete for #{a.source_name}. #{agreement.gsub('_', ' ').downcase.capitalize} between analyst and sentinel. Trust score #{trust >= 80 ? 'within high-confidence range' : trust >= 60 ? 'moderate — recommend secondary verification' : 'below threshold — flagged for manual review'}."
       }
     )
   end
@@ -445,36 +478,56 @@ def seed_compounding_intelligence!
 
   # --- Contradiction Logs ---
   puts "Seeding contradiction detections..."
-  contradiction_descriptions = [
-    "Source A reports ceasefire agreement while Source B reports continued hostilities",
-    "Casualty figures differ by order of magnitude between state and independent media",
-    "Timeline of events contradicts between Eastern and Western outlets",
-    "Attribution of attack claimed by multiple conflicting sources",
-    "Economic impact assessment varies drastically across ideological lines",
-    "Diplomatic stance reported as both conciliatory and aggressive by different outlets",
-    "Troop movement reports contradict satellite imagery analysis",
-    "Election interference claims sourced to opposing intelligence agencies"
-  ]
 
-  articles = Article.where.not(source_name: nil).to_a
-  20.times do |i|
-    a, b = articles.sample(2)
+  # Build headline→article lookup for curated contradiction pairs
+  headline_to_article = Article.all.index_by(&:headline)
+
+  DEMO_CONTRADICTIONS.each do |pair|
+    template_a = DEMO_ARTICLES[pair[:article_a_idx]]
+    template_b = DEMO_ARTICLES[pair[:article_b_idx]]
+    next unless template_a && template_b
+
+    article_a = headline_to_article[template_a[:headline]]
+    article_b = headline_to_article[template_b[:headline]]
+    next unless article_a && article_b
+
+    ContradictionLog.create!(
+      article_a_id: article_a.id,
+      article_b_id: article_b.id,
+      contradiction_type: pair[:contradiction_type],
+      severity: pair[:severity],
+      embedding_similarity: rand(0.55..0.82).round(4),
+      source_a: article_a.source_name,
+      source_b: article_b.source_name,
+      description: pair[:description],
+      metadata: {}
+    )
+  rescue ActiveRecord::RecordInvalid => e
+    puts "[contradiction] Skipping: #{e.message}"
+    next
+  end
+
+  # Add a few more random contradictions to fill out the dataset
+  all_articles = Article.where.not(source_name: nil).to_a
+  10.times do
+    a, b = all_articles.sample(2)
     next unless a && b && a.id != b.id
 
     ContradictionLog.create!(
       article_a_id: a.id,
       article_b_id: b.id,
-      contradiction_type: %w[cross_source temporal_shift self_contradiction].sample,
-      severity: rand(0.3..0.95).round(2),
-      embedding_similarity: rand(0.4..0.85).round(4),
+      contradiction_type: %w[cross_source temporal_shift].sample,
+      severity: rand(0.4..0.80).round(2),
+      embedding_similarity: rand(0.45..0.80).round(4),
       source_a: a.source_name,
       source_b: b.source_name,
-      description: contradiction_descriptions[i % contradiction_descriptions.size],
+      description: "Narrative framing diverges significantly between #{a.source_name} and #{b.source_name} on the same underlying event.",
       metadata: {}
     )
   rescue ActiveRecord::RecordInvalid
     next
   end
+
   puts "Logged #{ContradictionLog.count} contradictions."
 
   # --- Intelligence Brief ---
@@ -486,7 +539,13 @@ def seed_compounding_intelligence!
     title: "VERITAS Daily Intelligence Assessment — #{Date.today.strftime('%d %b %Y')}",
     brief_type: "daily",
     status: "complete",
-    executive_summary: "VERITAS has processed #{Article.count} articles across #{SourceCredibility.count} profiled sources in the past 24 hours. #{NarrativeSignature.count} active narrative patterns detected with #{ContradictionLog.count} cross-source contradictions flagged for analyst review. Elevated threat posture observed in Eastern Europe and Middle East corridors.",
+    executive_summary: "VERITAS has processed #{Article.count} articles across #{SourceCredibility.count} profiled sources over the past 7 days. " \
+      "#{NarrativeSignature.count} active narrative signatures detected with #{ContradictionLog.count} cross-source contradictions flagged for analyst review. " \
+      "THREAT POSTURE: ELEVATED. Multiple simultaneous escalation vectors detected — Black Sea naval standoff, Iran nuclear enrichment at 83.7%, " \
+      "coordinated cyberattack on European ports attributed to GRU Unit 74455, and PLA encirclement exercises around Taiwan. " \
+      "The IMF has warned of polycrisis cascading risks. State media narratives from Russia and China show coordinated framing patterns " \
+      "that diverge significantly from independent source reporting. VERITAS recommends heightened monitoring of narrative amplification " \
+      "across Eastern Europe and Indo-Pacific corridors.",
     period_start: 24.hours.ago,
     period_end: Time.current,
     articles_processed: Article.count,
