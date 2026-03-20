@@ -5,6 +5,7 @@ require_relative "seeds/demo_articles"
 # and SolidCable's insert fails with "No unique index found for id".
 Article.skip_callback(:commit, :after, :broadcast_sidebar_update)
 Article.skip_callback(:commit, :after, :broadcast_to_globe)
+Article.skip_callback(:commit, :after, :enqueue_content_fetch)
 
 puts "Cleaning up database..."
 EmbeddingSnapshot.destroy_all

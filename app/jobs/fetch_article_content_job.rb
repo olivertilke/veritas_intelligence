@@ -5,7 +5,7 @@ class FetchArticleContentJob < ApplicationJob
   def perform(article_id)
     article = Article.find_by(id: article_id)
     return unless article
-    return if article.content.present?  # Already has content
+    return if article.article_images.present?  # Already has images extracted
     
     # Check if we have a valid URL
     source_url = article.source_url.to_s.strip

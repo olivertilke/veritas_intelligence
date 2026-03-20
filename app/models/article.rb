@@ -13,6 +13,7 @@ class Article < ApplicationRecord
 
   after_create_commit :broadcast_sidebar_update
   after_create_commit :broadcast_to_globe
+  after_create_commit :enqueue_content_fetch
 
   # ----------------------------------------------------------
   # Scopes for Regional Intelligence Analysis
@@ -53,6 +54,11 @@ class Article < ApplicationRecord
   end
 
   private
+
+  def enqueue_content_fetch
+    return unless fetchable_source?
+    FetchArticleContentJob.perform_later(id)
+  end
 
   def broadcast_sidebar_update
     broadcast_prepend_to(
