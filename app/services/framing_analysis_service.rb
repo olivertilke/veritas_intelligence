@@ -1,4 +1,7 @@
 class FramingAnalysisService
+  # Seconds to sleep after each successful LLM call to avoid bursting the API.
+  INTER_CALL_DELAY = 0.5
+
   SYSTEM_PROMPT = <<~PROMPT.freeze
     You are a media framing analyst for the VERITAS intelligence platform.
     You compare two news articles about the same event or topic and classify
@@ -35,6 +38,8 @@ class FramingAnalysisService
 
     result = call_llm(origin, target)
     normalize_result(result)
+  rescue OpenRouterClient::RateLimitError
+    raise # let the job-level retry_on handle it with exponential backoff
   rescue StandardError => e
     Rails.logger.warn "[FramingAnalysis] LLM call failed for articles ##{origin.id}→##{target.id}: #{e.message}"
     heuristic_fallback(origin, target)
@@ -44,7 +49,9 @@ class FramingAnalysisService
 
   def call_llm(origin, target)
     user_prompt = build_prompt(origin, target)
-    @client.chat(:arbiter, SYSTEM_PROMPT, user_prompt, expect_json: true)
+    result = @client.chat(:arbiter, SYSTEM_PROMPT, user_prompt, expect_json: true)
+    sleep(INTER_CALL_DELAY)
+    result
   end
 
   def build_prompt(origin, target)

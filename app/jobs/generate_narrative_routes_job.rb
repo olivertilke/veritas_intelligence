@@ -1,8 +1,13 @@
 class GenerateNarrativeRoutesJob < ApplicationJob
   queue_as :default
-  
+
   # Retry on failure with exponential backoff
   retry_on ActiveRecord::Deadlocked, wait: ->(attempt) { (attempt ** 4).minutes }
+
+  # Retry on OpenRouter rate limits: 5 attempts, backing off 30s → 60s → 120s → 240s → give up.
+  # RateLimitError is re-raised by FramingAnalysisService so the whole batch retries cleanly
+  # rather than silently degrading individual hops to the heuristic fallback.
+  retry_on OpenRouterClient::RateLimitError, wait: :exponentially_longer, attempts: 5
   
   def perform(limit: 50)
     Rails.logger.info "[JOB] GenerateNarrativeRoutesJob started (limit: #{limit})"
