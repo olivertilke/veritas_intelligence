@@ -111,6 +111,7 @@ export default class extends Controller {
       this._globe.scene().remove(this._packetGroup)
     }
     this._hideRouteChoiceMenu()
+    if (this._refreshTimeout) clearTimeout(this._refreshTimeout)
   }
 
   get globe() {
@@ -1175,6 +1176,11 @@ export default class extends Controller {
       this._globe.pointsData(
         current.map(p => p.id === data.point.id ? { ...p, ...data.point } : p)
       )
+    } else if (data.type === "routes_updated" || data.type === "articles_fetched") {
+      // New arcs or articles are in the DB — debounce a globe data refresh so
+      // multiple rapid broadcasts coalesce into a single re-fetch.
+      if (this._refreshTimeout) clearTimeout(this._refreshTimeout)
+      this._refreshTimeout = setTimeout(() => this._loadData(), 2000)
     }
   }
 

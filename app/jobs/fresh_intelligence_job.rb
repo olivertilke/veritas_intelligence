@@ -96,7 +96,7 @@ class FreshIntelligenceJob < ApplicationJob
 
     # 5. Broadcast route update to globe if any routes were created
     if routes_created > 0
-      ActionCable.server.broadcast("globe_channel", {
+      ActionCable.server.broadcast("globe", {
         type: "routes_updated",
         count: routes_created
       })

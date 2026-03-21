@@ -19,8 +19,8 @@ class GenerateNarrativeRoutesJob < ApplicationJob
     
     # Broadcast to Globe channel if routes were created
     if routes_created > 0
-      ActionCable.server.broadcast('GlobeChannel', {
-        type: 'routes_updated',
+      ActionCable.server.broadcast("globe", {
+        type: "routes_updated",
         count: routes_created,
         message: "#{routes_created} new narrative routes generated"
       })

@@ -71,7 +71,7 @@ class FetchArticlesJob < ApplicationJob
     Rails.logger.info "[FetchArticlesJob] ✅ Done — #{created} saved, #{rejected} filtered, #{skipped} skipped."
 
     if created > 0
-      ActionCable.server.broadcast("globe_channel", {
+      ActionCable.server.broadcast("globe", {
         type:    "articles_fetched",
         count:   created,
         message: "#{created} new geopolitical articles incoming"
