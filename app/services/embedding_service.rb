@@ -9,19 +9,18 @@ class EmbeddingService
       return article.embedding.present?
     end
 
-    # Ensure there's enough text to embed
-    return false unless article.content.present? || article.ai_analysis&.summary.present?
+    # Ensure there's enough text to embed — headline is the minimum viable fallback
+    return false unless article.headline.present? || article.content.present? || article.ai_analysis&.summary.present?
 
     Rails.logger.info "[SEMANTIC INTEL] Generating embedding for Article ##{article.id}"
 
     # We combine the most semantically dense parts of the article
-    # This gives the vector the best representation of "what this is about"
+    # Falls back to headline-only if content and summary are unavailable
     text_to_embed = [
-      "HEADLINE: #{article.headline}",
-      "TOPIC: #{article.ai_analysis&.geopolitical_topic || 'Unknown'}",
-      "SUMMARY: #{article.ai_analysis&.summary}",
-      # Add a chunk of the raw content just for extra context
-      ActionController::Base.helpers.strip_tags(article.content.to_s)[0..1000]
+      ("HEADLINE: #{article.headline}" if article.headline.present?),
+      ("TOPIC: #{article.ai_analysis&.geopolitical_topic || 'Unknown'}" if article.ai_analysis&.geopolitical_topic.present?),
+      ("SUMMARY: #{article.ai_analysis&.summary}" if article.ai_analysis&.summary.present?),
+      (ActionController::Base.helpers.strip_tags(article.content.to_s)[0..1000] if article.content.present?)
     ].compact.join("\n\n")
 
     begin
