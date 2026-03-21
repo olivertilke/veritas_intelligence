@@ -48,8 +48,16 @@ class FreshIntelligenceJob < ApplicationJob
     # 3. Save articles individually — skip failures without aborting the batch
     saved_articles = []
     relevant_attrs.each do |attrs|
-      article = Article.create!(attrs)
-      saved_articles << article
+      url     = attrs[:source_url]
+      article = if url.present?
+                  Article.find_or_create_by(source_url: url) { |a| a.assign_attributes(attrs) }
+                else
+                  Article.create!(attrs)
+                end
+
+      saved_articles << article if article.previously_new_record?
+    rescue ActiveRecord::RecordNotUnique
+      Rails.logger.info "[FreshIntelligenceJob] Duplicate skipped (unique index): #{attrs[:source_url]}"
     rescue ActiveRecord::RecordInvalid => e
       Rails.logger.warn "[FreshIntelligenceJob] Skipping article '#{attrs[:source_url]}': #{e.message}"
     rescue StandardError => e
