@@ -136,6 +136,21 @@ class PagesController < ApplicationController
     search_query = params[:search_query]
     topic        = params[:topic].presence
 
+    # Cache key incorporates all query params + latest article timestamp.
+    # Auto-invalidates when any article is created/updated.
+    # Search queries skip the cache (semantic search is already fast + personalised).
+    cache_key = if search_query.blank?
+                  latest = Article.maximum(:updated_at)&.to_i
+                  "globe_data:#{to_time&.to_i}:#{view_mode}:#{topic}:#{latest}"
+                end
+
+    if cache_key
+      cached = Rails.cache.read(cache_key)
+      if cached
+        return render json: cached
+      end
+    end
+
     scope  = Article.includes(:country, :region, :ai_analysis)
     scope  = scope.where("published_at <= ?", to_time) if to_time
     scope  = scope.order(published_at: :desc)
@@ -280,11 +295,15 @@ class PagesController < ApplicationController
       { lat: a.latitude, lng: a.longitude, weight: weight }
     end
 
-    render json: {
+    payload = {
       points: points, arcs: arcs, routes: routes, regions: regions,
       heatmap: heatmap, heatmapClusters: heatmap_clusters,
       mode: VeritasMode.current
     }
+
+    Rails.cache.write(cache_key, payload, expires_in: 5.minutes) if cache_key
+
+    render json: payload
   end
 
   # GET /api/article_preview/:article_id — Lightweight article card for DNA node click

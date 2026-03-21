@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_18_145310) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_21_215032) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -60,6 +60,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_18_145310) do
     t.index ["country_id"], name: "index_articles_on_country_id"
     t.index ["region_id"], name: "index_articles_on_region_id"
     t.index ["source_type"], name: "index_articles_on_source_type"
+    t.index ["source_url"], name: "index_articles_on_source_url_unique", unique: true, where: "(source_url IS NOT NULL)"
     t.index ["telegram_channel_id", "telegram_message_id"], name: "index_articles_on_telegram_metadata"
   end
 
