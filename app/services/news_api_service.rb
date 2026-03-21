@@ -119,13 +119,20 @@ class NewsApiService
 
   # Fetches articles for an arbitrary user-supplied query string.
   # Used by FreshIntelligenceJob during live search.
+  # Results are cached per query per day — 50 users searching "Trump" = 1 API call.
   def fetch_by_query(query_string, max_results: 20)
     return [] if VeritasMode.demo?
     return [] if @api_key.blank?
     return [] if api_limit_reached?
 
-    raw = call_api(BASE_URL, query: query_string, page_size: [max_results, 100].min, page: 1)
-    track_api_call!
+    cache_key = "newsapi:search:#{query_string.parameterize}:#{Date.current}"
+
+    raw = Rails.cache.fetch(cache_key, expires_in: 6.hours) do
+      result = call_api(BASE_URL, query: query_string, page_size: [max_results, 100].min, page: 1)
+      track_api_call! if result.any?
+      result
+    end
+
     return [] if raw.empty?
 
     existing_urls = Article.where(source_url: raw.map { |a| a["url"] }).pluck(:source_url).to_set

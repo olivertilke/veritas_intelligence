@@ -66,20 +66,24 @@ class GeopoliticalRelevanceFilter
   end
 
   def call(headline:, description:)
-    text = normalize("#{headline} #{description}")
+    cache_key = "relevance:#{Digest::SHA256.hexdigest("#{headline}#{description}")[0..15]}"
 
-    if rejection_match?(text)
-      log_decision(:reject, "keyword_reject", headline)
-      return build_result(false, "Not geopolitically relevant", :keyword_reject)
+    Rails.cache.fetch(cache_key, expires_in: 24.hours) do
+      text = normalize("#{headline} #{description}")
+
+      if rejection_match?(text)
+        log_decision(:reject, "keyword_reject", headline)
+        next build_result(false, "Not geopolitically relevant", :keyword_reject)
+      end
+
+      if strong_match?(text)
+        topic = infer_topic(text)
+        log_decision(:pass, "keyword_pass", headline)
+        next build_result(true, topic, :keyword_pass)
+      end
+
+      llm_classify(headline, description)
     end
-
-    if strong_match?(text)
-      topic = infer_topic(text)
-      log_decision(:pass, "keyword_pass", headline)
-      return build_result(true, topic, :keyword_pass)
-    end
-
-    llm_classify(headline, description)
   end
 
   private
