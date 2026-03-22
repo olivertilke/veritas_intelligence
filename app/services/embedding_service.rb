@@ -4,8 +4,13 @@ class EmbeddingService
   end
 
   def generate(article)
-    # Demo mode: skip if article already has an embedding, never call external API
-    if VeritasMode.demo?
+    # Skip API calls for demo/seed articles — they don't need real embeddings.
+    # NOTE: We check the ARTICLE, not VeritasMode.demo?, because VeritasMode is
+    # stored in Solid Cache and silently defaults to "demo" if the cache entry is
+    # missing or expired. That caused all embedding jobs to short-circuit in 2ms
+    # without ever reaching the API — the "poisoned cache key 2335321407805460513"
+    # was actually the hash of "veritas_mode", not an embedding result.
+    if article.fallback_demo?
       return article.embedding.present?
     end
 
