@@ -23,6 +23,7 @@ class GdeltIngestionService
 
   def initialize
     @bq = GdeltBigQueryService.new
+    @relevance_filter = GeopoliticalRelevanceFilter.new
   end
 
   def fetch_and_process
@@ -102,6 +103,9 @@ class GdeltIngestionService
     source_name   = row[:SourceCommonName].to_s.presence || "GDELT"
     themes        = parse_themes(row[:V2Themes])
     location      = parse_first_location(row[:V2Locations])
+    # Skip articles with no valid geospatial coordinates — we need location data
+    return nil if location[:latitude].nil? || location[:longitude].nil?
+
     sentiment     = parse_sentiment(row[:V2Tone])
     language      = parse_language(row[:TranslationInfo])
     published_at  = parse_date(row[:DATE])
@@ -126,8 +130,12 @@ class GdeltIngestionService
   end
 
   # V2Locations: semicolon-delimited blocks, each #-delimited.
-  # Format: type#name#countryCode#ADM1#lat#lon#featureId
-  # Returns the first entry with valid coordinates.
+  # Format: Type#FullName#CountryCode#ADM1Code#Latitude#Longitude#FeatureID
+  # Returns the first entry with valid geographic coordinates.
+  #
+  # IMPORTANT: The FeatureID field can be a large integer (e.g. "65104") that
+  # looks like a float but is NOT a coordinate. We MUST validate that parsed
+  # lat is within [-90, 90] and lon is within [-180, 180].
   def parse_first_location(raw)
     default = { country: nil, latitude: nil, longitude: nil, name: nil }
     return default if raw.blank?
@@ -137,9 +145,18 @@ class GdeltIngestionService
       # Expect at least 6 parts: type, name, countryCode, ADM1, lat, lon
       next unless parts.size >= 6
 
-      lat = parts[4].to_f
-      lon = parts[5].to_f
-      next if lat.zero? && lon.zero?
+      # Parts 4 and 5 should be lat/lon — validate they look like real coordinates
+      lat_str = parts[4].to_s.strip
+      lon_str = parts[5].to_s.strip
+      next if lat_str.blank? || lon_str.blank?
+
+      lat = lat_str.to_f
+      lon = lon_str.to_f
+
+      # Strict geographic bounds validation — if outside these ranges the parser
+      # grabbed the wrong field (e.g. FeatureID) or the data is corrupt
+      next unless lat.between?(-90.0, 90.0) && lon.between?(-180.0, 180.0)
+      next if lat.zero? && lon.zero? # null island
 
       return {
         country:   parts[2].presence,
@@ -178,6 +195,18 @@ class GdeltIngestionService
   end
 
   def save_article(data)
+    # GeopoliticalRelevanceFilter: use GDELT themes as description since the real
+    # headline is only available after FetchArticleContentJob scrapes the URL.
+    theme_text = data.themes.join(", ")
+    relevance = @relevance_filter.call(
+      headline:    "#{data.source_name} — GDELT",
+      description: theme_text
+    )
+    unless relevance[:relevant]
+      Rails.logger.info "[GdeltIngestionService] 🚫 Filtered (#{relevance[:method]}): #{data.url}"
+      return nil
+    end
+
     Article.find_or_create_by(source_url: data.url) do |a|
       # Placeholder headline — FetchArticleContentJob overwrites this with the
       # scraped HTML <title>, which FramingAnalysisService relies on.
