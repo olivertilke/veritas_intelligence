@@ -195,7 +195,7 @@ class GdeltIngestionService
       # Strict geographic bounds validation — if outside these ranges the parser
       # grabbed the wrong field (e.g. FeatureID) or the data is corrupt
       next unless lat.between?(-90.0, 90.0) && lon.between?(-180.0, 180.0)
-      next if lat.zero? && lon.zero? # null island
+      next if lat.zero? || lon.zero? # exact 0.0 = empty/missing GDELT field parsed as float
 
       return {
         country:   parts[2].presence,
