@@ -51,6 +51,16 @@ production:
     queue: intelligence
     schedule: every 12 hours
 
+  fetch_gdelt_articles:
+    class: FetchGdeltArticlesJob
+    queue: default
+    schedule: every hour
+
+  fetch_gdelt_articles:
+    class: FetchGdeltArticlesJob
+    queue: default
+    schedule: every hour
+
 development:
   fetch_articles:
     class: FetchArticlesJob
@@ -88,3 +98,8 @@ development:
     class: CaptureEmbeddingSnapshotJob
     queue: intelligence
     schedule: every 12 hours
+
+  fetch_gdelt_articles:
+    class: FetchGdeltArticlesJob
+    queue: default
+    schedule: every hour
