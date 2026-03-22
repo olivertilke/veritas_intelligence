@@ -92,13 +92,32 @@ class PagesController < ApplicationController
   end
 
   def home
-    # Hot articles: highest threat level first, then trust score (lower = more suspicious)
-    # Exclude GDELT articles that still have placeholder headlines (not yet scraped)
+    # Hot articles: surface the most geopolitically interesting, best-analyzed
+    # articles. Prioritize by threat severity, narrative richness, then suspicion.
+    # Exclude GDELT articles that still have placeholder headlines (not yet scraped).
+    #
+    # NOTE: threat_level is a string (CRITICAL/HIGH/MODERATE/LOW/NEGLIGIBLE),
+    # NOT a number — alphabetical sort puts NEGLIGIBLE first! Use CASE WHEN.
+    threat_order = Arel.sql(<<~SQL.squish)
+      CASE ai_analyses.threat_level
+        WHEN 'CRITICAL'   THEN 5
+        WHEN 'HIGH'       THEN 4
+        WHEN 'MODERATE'   THEN 3
+        WHEN 'LOW'        THEN 2
+        WHEN 'NEGLIGIBLE' THEN 1
+        ELSE 3
+      END DESC,
+      (SELECT COUNT(*) FROM narrative_arcs WHERE narrative_arcs.article_id = articles.id) DESC,
+      ai_analyses.trust_score ASC,
+      articles.published_at DESC
+    SQL
+
     @hot_articles = Article
       .includes(:country, :region, :ai_analysis, narrative_arcs: :narrative_routes)
-      .where.not(ai_analysis: { threat_level: nil })
+      .joins(:ai_analysis)
+      .where.not(ai_analyses: { threat_level: nil })
       .where.not("headline LIKE '%— GDELT'")
-      .order('ai_analysis.threat_level DESC, ai_analysis.trust_score ASC, articles.published_at DESC')
+      .order(threat_order)
       .limit(15)
     
     # Fallback: all articles ordered by date (if not enough hot articles)
