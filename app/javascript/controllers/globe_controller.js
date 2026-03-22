@@ -46,6 +46,10 @@ export default class extends Controller {
     this._routeChoiceMenu        = null
     this._routeMenuOpenedAt      = 0
     this._selectedArcArticleId   = null
+    this._timelapseState         = null
+    this._timelapseOverlay       = null
+    this._preTimelapseState      = null
+    this._timelapseToggleHandler = (e) => this._onTimelapseToggle(e)
     window.addEventListener("veritas:flyTo",             this._flyToHandler)
     window.addEventListener("veritas:perspectiveChange", this._perspectiveHandler)
     window.addEventListener("veritas:topicFilter",       this._topicHandler)
@@ -62,6 +66,7 @@ export default class extends Controller {
     window.addEventListener("veritas:chronicleActive",   this._journeyActivateHandler)
     window.addEventListener("veritas:journeyEnded",      this._journeyEndedHandler)
     document.addEventListener("click",                   this._routeMenuClickHandler)
+    window.addEventListener("veritas:timelapseToggle",   this._timelapseToggleHandler)
     this._initGlobe()
     this._subscription = consumer.subscriptions.create("GlobeChannel", {
       received:     (data) => this._onBroadcast(data),
@@ -93,6 +98,8 @@ export default class extends Controller {
     window.removeEventListener("veritas:chronicleActive",   this._journeyActivateHandler)
     window.removeEventListener("veritas:journeyEnded",      this._journeyEndedHandler)
     document.removeEventListener("click",                   this._routeMenuClickHandler)
+    window.removeEventListener("veritas:timelapseToggle",   this._timelapseToggleHandler)
+    if (this._timelapseState) this._timelapseState.playing = false
     clearTimeout(this._rotateTimer)
     if (this._heatmapPulseId) clearInterval(this._heatmapPulseId)
     if (this._heatmapTooltipEl) this._heatmapTooltipEl.remove()
@@ -305,6 +312,7 @@ export default class extends Controller {
     this._globe.pointOfView({ lat: 20, lng: 10, altitude: 2.5 }, 0)
 
     await this._loadData()
+    this._maybeAutoTimelapse()
 
     this._resizeObserver = new ResizeObserver(() => {
       this._globe.width(container.clientWidth).height(container.clientHeight)
@@ -1708,5 +1716,773 @@ export default class extends Controller {
     const g = parseInt(h.slice(2, 4), 16)
     const b = parseInt(h.slice(4, 6), 16)
     return `rgba(${r},${g},${b},${alpha})`
+  }
+
+  // -------------------------------------------------------
+  // Narrative Timelapse — Cinematic Playback Engine
+  // -------------------------------------------------------
+
+  _onTimelapseToggle() {
+    if (this._timelapseState) {
+      this._exitTimelapse()
+    } else {
+      this._startTimelapse()
+    }
+  }
+
+  _maybeAutoTimelapse() {
+    if (sessionStorage.getItem('veritas_timelapse_shown')) return
+    setTimeout(() => {
+      const segments = this._prepareTimelapseData()
+      if (segments.length >= 3) {
+        sessionStorage.setItem('veritas_timelapse_shown', 'true')
+        this._startTimelapse()
+      }
+    }, 2500)
+  }
+
+  _prepareTimelapseData() {
+    const allArcs = this._allArcs || []
+    if (allArcs.length === 0) return []
+
+    // Group by routeId, calculate max drift per route
+    const routeMap = new Map()
+    allArcs.forEach(seg => {
+      const routeId = seg.routeId
+      if (!routeId) return
+      if (!routeMap.has(routeId)) {
+        routeMap.set(routeId, { segments: [], maxDrift: 0 })
+      }
+      const route = routeMap.get(routeId)
+      route.segments.push(seg)
+      route.maxDrift = Math.max(route.maxDrift, seg.driftIntensity || 0)
+    })
+
+    // Pick top 3 routes by max drift (fewer = cleaner animation)
+    const topRoutes = [...routeMap.entries()]
+      .sort((a, b) => b[1].maxDrift - a[1].maxDrift)
+      .slice(0, 3)
+
+    if (topRoutes.length === 0) return []
+
+    // Collect and sort all segments chronologically
+    const timelapseSegments = []
+    topRoutes.forEach(([routeId, data]) => {
+      data.segments.forEach(seg => {
+        timelapseSegments.push({
+          ...seg,
+          _routeIndex: topRoutes.findIndex(r => r[0] === routeId),
+          _timestamp: new Date(seg.sourcePublishedAt || seg.publishedAt || 0).getTime()
+        })
+      })
+    })
+
+    timelapseSegments.sort((a, b) => a._timestamp - b._timestamp)
+
+    // Normalize timestamps to 0-1
+    if (timelapseSegments.length > 0) {
+      const t0 = timelapseSegments[0]._timestamp
+      const tN = timelapseSegments[timelapseSegments.length - 1]._timestamp
+      const range = tN - t0 || 1
+      timelapseSegments.forEach(seg => {
+        seg._normalizedTime = (seg._timestamp - t0) / range
+      })
+    }
+
+    return timelapseSegments
+  }
+
+  _startTimelapse() {
+    if (!this._globe) return
+    if (this._journeyActive) return
+
+    const segments = this._prepareTimelapseData()
+    if (segments.length === 0) return
+
+    this._timelapseState = {
+      segments: segments,
+      activeArcs: [],
+      currentTime: 0,
+      startedAt: null,
+      playing: true,
+      revealedCount: 0,
+      _pausedAt: null
+    }
+
+    // Save current state for clean restore
+    this._preTimelapseState = {
+      arcsData: this._cloneLayer(this._globe.arcsData() || []),
+      hexBinPointsData: this._cloneLayer(this._globe.hexBinPointsData() || []),
+      ringsData: this._cloneLayer(this._globe.ringsData() || []),
+      pointOfView: { ...(this._globe.pointOfView?.() || { lat: 20, lng: 10, altitude: 2.5 }) },
+      autoRotate: this._globe.controls().autoRotate,
+      autoRotateSpeed: this._globe.controls().autoRotateSpeed,
+      packetVisible: this._packetGroup ? this._packetGroup.visible !== false : true
+    }
+
+    // Clear globe for clean canvas
+    this._globe.arcsData([]).ringsData([])
+    if (this._packetGroup) this._packetGroup.visible = false
+    this._globe.controls().autoRotate = false
+
+    // Set arc callbacks ONCE — they read dynamic properties from the data objects
+    // so we never need to re-register them. Only arcsData() is called per-reveal.
+    this._applyTimelapseCallbacks()
+
+    this._enterTimelapseMode()
+
+    // Dispatch state
+    window.dispatchEvent(new CustomEvent("veritas:timelapseState", {
+      detail: { active: true }
+    }))
+
+    // Start the animation loop
+    this._timelapseState.startedAt = performance.now()
+    this._timelapseFrame()
+  }
+
+  _timelapseFrame() {
+    const state = this._timelapseState
+    if (!state || !state.playing) return
+
+    const TIMELAPSE_DURATION_MS = 12000
+    const elapsed = performance.now() - state.startedAt
+    state.currentTime = Math.min(elapsed / TIMELAPSE_DURATION_MS, 1.0)
+
+    // Reveal segments that should be visible at this time
+    const newlyRevealed = []
+    while (
+      state.revealedCount < state.segments.length &&
+      state.segments[state.revealedCount]._normalizedTime <= state.currentTime
+    ) {
+      const seg = state.segments[state.revealedCount]
+      seg._revealTime = performance.now()
+      seg._opacity = 0
+      state.activeArcs.push(seg)
+      newlyRevealed.push(seg)
+      state.revealedCount++
+    }
+
+    // Fire emergence effect for newly revealed arcs
+    newlyRevealed.forEach(seg => this._onTimelapseArcReveal(seg))
+
+    // Update opacity on all active arcs (fast 300ms fade-in)
+    const now = performance.now()
+    state.activeArcs.forEach(arc => {
+      arc._opacity = Math.min((now - arc._revealTime) / 300, 1.0)
+    })
+
+    // Only push arcsData when new arcs appeared — avoids flicker from rebuilding every frame.
+    // The arc callbacks read _opacity etc. from the data objects directly.
+    if (newlyRevealed.length > 0) {
+      this._globe.arcsData([...state.activeArcs])
+    }
+
+    // Camera: smoothly follow the latest revealed segment
+    if (newlyRevealed.length > 0) {
+      this._smoothTimelapseCamera(newlyRevealed[newlyRevealed.length - 1])
+    }
+
+    // Update overlay
+    if (newlyRevealed.length > 0) {
+      this._updateTimelapseOverlay(newlyRevealed[newlyRevealed.length - 1], state)
+    }
+
+    // Update progress bar
+    this._updateTimelapseProgress(state)
+
+    // Continue or end
+    if (state.currentTime >= 1.0) {
+      setTimeout(() => this._endTimelapse(), 1500)
+    } else {
+      requestAnimationFrame(() => this._timelapseFrame())
+    }
+  }
+
+  // Set arc callbacks ONCE at timelapse start. The callbacks read dynamic
+  // properties (_opacity, _revealTime) from the arc data objects, so they
+  // produce correct visuals without being re-registered every frame.
+  _applyTimelapseCallbacks() {
+    if (!this._globe) return
+
+    this._globe
+      .arcColor(d => {
+        const opacity = d._opacity != null ? d._opacity : 1
+        const intensity = d.driftIntensity || 0
+        const framing = d.framingShift || 'original'
+
+        // Neutral baseline for low-drift / original framing (NOT green)
+        if (intensity < 0.1 || framing === 'original') {
+          return `rgba(120, 140, 160, ${0.7 * opacity})`
+        }
+
+        // 8-stop gradient: neutral start → framing-specific end
+        const sourceColor = { r: 120, g: 140, b: 160, a: 0.7 * opacity }
+        const targetColor = this._getDriftTargetColor(framing, intensity)
+        targetColor.a = Math.max(0.3, targetColor.a) * opacity
+
+        const stops = 8
+        const colors = []
+        for (let i = 0; i < stops; i++) {
+          const t = i / (stops - 1)
+          const eased = t * t
+          colors.push(this._interpolateColor(sourceColor, targetColor, eased))
+        }
+        return colors
+      })
+      .arcStroke(d => {
+        const baseThickness = 0.6 + (d.driftIntensity || 0) * 1.2
+        const revealScale = d._opacity != null ? d._opacity : 1
+        return baseThickness * (0.5 + revealScale * 0.5)
+      })
+      .arcDashAnimateTime(d => {
+        const age = performance.now() - (d._revealTime || 0)
+        const intensity = d.driftIntensity || 0
+        if (age < 1500) return 600
+        return 4000 - (intensity * 2800)
+      })
+      .arcDashLength(d => {
+        const f = d.framingShift || 'original'
+        if (f === 'original') return 1
+        if (f === 'neutralized') return 0.6
+        if (f === 'amplified') return 0.4
+        if (f === 'distorted') return 0.25
+        return 1
+      })
+      .arcDashGap(d => {
+        const f = d.framingShift || 'original'
+        if (f === 'original') return 0
+        if (f === 'neutralized') return 0.15
+        if (f === 'amplified') return 0.2
+        if (f === 'distorted') return 0.25
+        return 0
+      })
+  }
+
+  // Store default arc stroke logic so we can restore it
+  _arcStrokeDefault(d) {
+    if (this._selectedArcArticleId && String(d.articleId) === String(this._selectedArcArticleId)) {
+      return 2.5
+    }
+    if (d.arcStroke != null) return d.arcStroke
+    if (d.driftIntensity != null) {
+      const base = d.tier === 1 ? 1.2 : (d.tier === 2 ? 0.5 : 0.4)
+      return base + (d.driftIntensity * 0.8)
+    }
+    if (d.tier === 1) return 1.2
+    if (d.tier === 2) return 0.5
+    return d.thickness ? Math.min(d.thickness, 1.0) : 0.4
+  }
+
+  _onTimelapseArcReveal(arc) {
+    if (!this._globe) return
+
+    // Flash a ring at the SOURCE location
+    const currentRings = this._globe.ringsData() || []
+    const framingColor = this._getFramingColor(arc.framingShift)
+    const ring = {
+      lat: arc.startLat,
+      lng: arc.startLng,
+      maxRadius: 4,
+      propagationSpeed: 3,
+      repeatPeriod: 0,
+      color: () => `${framingColor}cc`,
+      threat: 1
+    }
+    this._globe.ringsData([...currentRings, ring])
+
+    setTimeout(() => {
+      if (!this._globe) return
+      this._globe.ringsData((this._globe.ringsData() || []).filter(r => r !== ring))
+    }, 2000)
+
+    // High-drift arc: shockwave ring at target too
+    if ((arc.driftIntensity || 0) > 0.5) {
+      setTimeout(() => {
+        if (!this._globe) return
+        const targetRing = {
+          lat: arc.endLat,
+          lng: arc.endLng,
+          maxRadius: 3,
+          propagationSpeed: 2,
+          repeatPeriod: 0,
+          color: () => `${framingColor}88`,
+          threat: 1
+        }
+        const rings = this._globe.ringsData() || []
+        this._globe.ringsData([...rings, targetRing])
+        setTimeout(() => {
+          if (!this._globe) return
+          this._globe.ringsData((this._globe.ringsData() || []).filter(r => r !== targetRing))
+        }, 2000)
+      }, 400)
+    }
+  }
+
+  _smoothTimelapseCamera(segment) {
+    if (!this._globe) return
+
+    const midLat = (segment.startLat + segment.endLat) / 2
+    const midLng = (segment.startLng + segment.endLng) / 2
+
+    const current = this._globe.pointOfView()
+    const maxDeg = 60
+
+    const latDiff = midLat - current.lat
+    const lngDiff = midLng - current.lng
+
+    const targetLat = current.lat + Math.max(-maxDeg, Math.min(maxDeg, latDiff * 0.4))
+    const targetLng = current.lng + Math.max(-maxDeg, Math.min(maxDeg, lngDiff * 0.4))
+
+    this._globe.pointOfView(
+      { lat: targetLat, lng: targetLng, altitude: 2.2 },
+      1500
+    )
+  }
+
+  // -------------------------------------------------------
+  // Timelapse Overlay HUD
+  // -------------------------------------------------------
+
+  _enterTimelapseMode() {
+    if (this._timelapseOverlay) return
+
+    const overlay = document.createElement('div')
+    overlay.id = 'timelapse-overlay'
+    overlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:200;font-family:"JetBrains Mono","Fira Code","SF Mono",monospace;'
+    overlay.innerHTML = `
+      <div style="
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        pointer-events: none;
+      ">
+        <!-- Top center: mode indicator -->
+        <div id="tl-header" style="
+          position: absolute;
+          top: 80px;
+          left: 50%;
+          transform: translateX(-50%);
+          text-align: center;
+          opacity: 0;
+          transition: opacity 0.8s ease;
+        ">
+          <div style="
+            font-size: 9px;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            color: rgba(0, 255, 204, 0.5);
+            margin-bottom: 4px;
+          ">&#9654; NARRATIVE TIMELAPSE &#9664;</div>
+          <div id="tl-route-name" style="
+            font-size: 14px;
+            color: #e0e0e0;
+            max-width: 500px;
+          "></div>
+        </div>
+
+        <!-- Bottom left: current event card -->
+        <div id="tl-event-card" style="
+          position: absolute;
+          bottom: 100px;
+          left: 30px;
+          background: rgba(10, 12, 18, 0.88);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(0, 255, 204, 0.12);
+          border-radius: 6px;
+          padding: 16px 20px;
+          min-width: 340px;
+          max-width: 440px;
+          opacity: 0;
+          transform: translateY(10px);
+          transition: opacity 0.5s ease, transform 0.5s ease;
+        ">
+          <div id="tl-flow" style="font-size: 13px; margin-bottom: 8px;"></div>
+          <div id="tl-sources" style="font-size: 10px; color: #607080; margin-bottom: 10px;"></div>
+          <div id="tl-headlines" style="
+            font-size: 10px;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            display: none;
+          "></div>
+          <div id="tl-metrics" style="display: flex; gap: 20px; font-size: 10px;"></div>
+          <div id="tl-explanation" style="
+            font-size: 10px;
+            color: #8898a8;
+            font-style: italic;
+            margin-top: 8px;
+            display: none;
+          "></div>
+        </div>
+
+        <!-- Bottom center: progress bar -->
+        <div id="tl-progress" style="
+          position: absolute;
+          bottom: 60px;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 300px;
+          opacity: 0;
+          transition: opacity 0.5s ease;
+        ">
+          <div style="
+            display: flex;
+            justify-content: space-between;
+            font-size: 8px;
+            letter-spacing: 1px;
+            color: #506070;
+            margin-bottom: 4px;
+          ">
+            <span id="tl-time-start"></span>
+            <span id="tl-time-end"></span>
+          </div>
+          <div style="
+            width: 100%;
+            height: 2px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 1px;
+            overflow: hidden;
+          ">
+            <div id="tl-progress-bar" style="
+              width: 0%;
+              height: 100%;
+              background: linear-gradient(90deg, rgba(0,255,204,0.8), rgba(0,255,204,0.3));
+              border-radius: 1px;
+              transition: width 0.1s linear;
+            "></div>
+          </div>
+        </div>
+
+        <!-- Bottom right: summary stats -->
+        <div id="tl-stats" style="
+          position: absolute;
+          bottom: 100px;
+          right: 30px;
+          text-align: right;
+          opacity: 0;
+          transition: opacity 0.5s ease;
+        ">
+          <div style="font-size: 8px; letter-spacing: 2px; color: #506070; text-transform: uppercase;">Timelapse Summary</div>
+          <div id="tl-stats-content" style="
+            font-size: 11px;
+            color: #c0c8d0;
+            margin-top: 6px;
+            line-height: 1.8;
+          "></div>
+        </div>
+
+        <!-- Controls — pointer-events: auto + z-index so clicks reach buttons -->
+        <div id="tl-controls" style="
+          position: absolute;
+          bottom: 20px;
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          gap: 12px;
+          pointer-events: auto;
+          z-index: 210;
+          opacity: 0;
+          transition: opacity 0.5s ease;
+        ">
+          <button id="tl-btn-playpause" style="
+            background: rgba(0, 255, 204, 0.1);
+            border: 1px solid rgba(0, 255, 204, 0.3);
+            color: #00ffcc;
+            font-family: inherit;
+            font-size: 10px;
+            letter-spacing: 1px;
+            padding: 6px 16px;
+            border-radius: 3px;
+            cursor: pointer;
+            text-transform: uppercase;
+          ">Pause</button>
+          <button id="tl-btn-restart" style="
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #8090a0;
+            font-family: inherit;
+            font-size: 10px;
+            letter-spacing: 1px;
+            padding: 6px 16px;
+            border-radius: 3px;
+            cursor: pointer;
+            text-transform: uppercase;
+          ">Restart</button>
+          <button id="tl-btn-exit" style="
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #8090a0;
+            font-family: inherit;
+            font-size: 10px;
+            letter-spacing: 1px;
+            padding: 6px 16px;
+            border-radius: 3px;
+            cursor: pointer;
+            text-transform: uppercase;
+          ">Exit</button>
+        </div>
+      </div>
+    `
+
+    const globeContainer = this.element
+    globeContainer.style.position = 'relative'
+    globeContainer.appendChild(overlay)
+    this._timelapseOverlay = overlay
+
+    // Wire up controls
+    document.getElementById('tl-btn-playpause').addEventListener('click', () => this._toggleTimelapsePause())
+    document.getElementById('tl-btn-restart').addEventListener('click', () => this._restartTimelapse())
+    document.getElementById('tl-btn-exit').addEventListener('click', () => this._exitTimelapse())
+
+    // Set timeline range labels
+    const state = this._timelapseState
+    if (state && state.segments.length > 0) {
+      const first = state.segments[0]
+      const last = state.segments[state.segments.length - 1]
+      const startEl = document.getElementById('tl-time-start')
+      const endEl = document.getElementById('tl-time-end')
+      if (startEl) startEl.textContent = this._formatTimelapseDate(first._timestamp)
+      if (endEl) endEl.textContent = this._formatTimelapseDate(last._timestamp)
+    }
+
+    // Fade in overlay elements
+    requestAnimationFrame(() => {
+      ['tl-header', 'tl-event-card', 'tl-progress', 'tl-stats', 'tl-controls'].forEach(id => {
+        const el = document.getElementById(id)
+        if (el) el.style.opacity = '1'
+      })
+    })
+  }
+
+  _formatTimelapseDate(timestamp) {
+    if (!timestamp) return ''
+    const d = new Date(timestamp)
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  _updateTimelapseOverlay(segment, state) {
+    const framingColor = this._getFramingColor(segment.framingShift)
+
+    // Flow: Country -> Country
+    const flowEl = document.getElementById('tl-flow')
+    if (flowEl) {
+      flowEl.innerHTML = `
+        <span style="color: #b0c4d8;">${segment.sourceCountry || '?'}</span>
+        <span style="color: #404850; margin: 0 8px;">&rarr;</span>
+        <span style="color: ${framingColor};">${segment.targetCountry || '?'}</span>
+      `
+    }
+
+    // Sources
+    const srcEl = document.getElementById('tl-sources')
+    if (srcEl) {
+      srcEl.textContent = `${segment.sourceName || '?'} \u2192 ${segment.targetSourceName || '?'}`
+    }
+
+    // Headlines
+    const hdlEl = document.getElementById('tl-headlines')
+    if (hdlEl && segment.sourceHeadline && segment.targetHeadline) {
+      hdlEl.innerHTML = `
+        <div style="color: #b0c4d8; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px;">&#9654; ${segment.sourceHeadline}</div>
+        <div style="color: ${framingColor}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px;">&#9654; ${segment.targetHeadline}</div>
+      `
+      hdlEl.style.display = 'block'
+    } else if (hdlEl) {
+      hdlEl.style.display = 'none'
+    }
+
+    // Metrics
+    const metEl = document.getElementById('tl-metrics')
+    if (metEl) {
+      const intensity = segment.driftIntensity || 0
+      const driftLevel = intensity > 0.7 ? 'CRITICAL' :
+                         intensity > 0.4 ? 'SIGNIFICANT' :
+                         intensity > 0.15 ? 'MODERATE' : 'MINIMAL'
+      const driftColor = intensity > 0.7 ? '#ff2d2d' :
+                         intensity > 0.4 ? '#ff8c00' :
+                         intensity > 0.15 ? '#ffd700' : '#8898a8'
+      const similarity = Math.round((segment.semanticSimilarity || 0))
+
+      metEl.innerHTML = `
+        <div>
+          <div style="font-size: 8px; color: #506070; text-transform: uppercase; letter-spacing: 1px;">Framing</div>
+          <div style="color: ${framingColor}; font-weight: 600;">${(segment.framingShift || 'unknown').toUpperCase()}</div>
+        </div>
+        <div>
+          <div style="font-size: 8px; color: #506070; text-transform: uppercase; letter-spacing: 1px;">Drift</div>
+          <div style="color: ${driftColor}; font-weight: 600;">${driftLevel}</div>
+        </div>
+        <div>
+          <div style="font-size: 8px; color: #506070; text-transform: uppercase; letter-spacing: 1px;">Sentiment</div>
+          <div>${segment.sentimentShift || 'N/A'}</div>
+        </div>
+        <div>
+          <div style="font-size: 8px; color: #506070; text-transform: uppercase; letter-spacing: 1px;">Match</div>
+          <div style="color: ${similarity > 85 ? '#38bdf8' : '#ffd700'};">${similarity}%</div>
+        </div>
+      `
+    }
+
+    // Explanation
+    const expEl = document.getElementById('tl-explanation')
+    if (expEl && segment.framingExplanation) {
+      expEl.textContent = `"${segment.framingExplanation}"`
+      expEl.style.display = 'block'
+    } else if (expEl) {
+      expEl.style.display = 'none'
+    }
+
+    // Stats
+    const statsEl = document.getElementById('tl-stats-content')
+    if (statsEl) {
+      const countries = new Set()
+      state.activeArcs.forEach(a => {
+        if (a.sourceCountry) countries.add(a.sourceCountry)
+        if (a.targetCountry) countries.add(a.targetCountry)
+      })
+      const driftValues = state.activeArcs.map(a => a.driftIntensity || 0)
+      const maxDrift = driftValues.length > 0 ? Math.max(...driftValues) : 0
+      const driftLabel = maxDrift > 0.7 ? 'CRITICAL' : maxDrift > 0.4 ? 'HIGH' : 'MODERATE'
+      const driftColor = maxDrift > 0.7 ? '#ff2d2d' : maxDrift > 0.4 ? '#ff8c00' : '#ffd700'
+
+      statsEl.innerHTML = `
+        <div>${state.activeArcs.length} narrative hops</div>
+        <div>${countries.size} countries involved</div>
+        <div>Peak drift: <span style="color: ${driftColor};">${driftLabel}</span></div>
+      `
+    }
+
+    // Animate the event card entrance
+    const card = document.getElementById('tl-event-card')
+    if (card) {
+      card.style.opacity = '1'
+      card.style.transform = 'translateY(0)'
+    }
+  }
+
+  _updateTimelapseProgress(state) {
+    const progBar = document.getElementById('tl-progress-bar')
+    if (progBar) {
+      progBar.style.width = `${Math.round(state.currentTime * 100)}%`
+    }
+  }
+
+  // -------------------------------------------------------
+  // Timelapse Controls
+  // -------------------------------------------------------
+
+  _toggleTimelapsePause() {
+    const state = this._timelapseState
+    if (!state) return
+
+    state.playing = !state.playing
+    const btn = document.getElementById('tl-btn-playpause')
+
+    if (state.playing) {
+      const pausedDuration = performance.now() - state._pausedAt
+      state.startedAt += pausedDuration
+      if (btn) btn.textContent = 'Pause'
+      this._timelapseFrame()
+    } else {
+      state._pausedAt = performance.now()
+      if (btn) btn.textContent = 'Play'
+    }
+  }
+
+  _restartTimelapse() {
+    this._exitTimelapse()
+    setTimeout(() => this._startTimelapse(), 300)
+  }
+
+  _exitTimelapse() {
+    const state = this._timelapseState
+    if (state) state.playing = false
+    this._timelapseState = null
+
+    // Fade out overlay
+    ['tl-header', 'tl-event-card', 'tl-progress', 'tl-stats', 'tl-controls'].forEach(id => {
+      const el = document.getElementById(id)
+      if (el) el.style.opacity = '0'
+    })
+
+    // Dispatch state
+    window.dispatchEvent(new CustomEvent("veritas:timelapseState", {
+      detail: { active: false }
+    }))
+
+    // Restore original globe state after fade-out
+    setTimeout(() => {
+      this._restoreTimelapseState()
+      if (this._timelapseOverlay) {
+        this._timelapseOverlay.remove()
+        this._timelapseOverlay = null
+      }
+    }, 600)
+  }
+
+  _endTimelapse() {
+    // Called when animation completes naturally — show final state briefly
+    const state = this._timelapseState
+    if (state) state.playing = false
+
+    const btn = document.getElementById('tl-btn-playpause')
+    if (btn) btn.textContent = 'Replay'
+  }
+
+  _restoreTimelapseState() {
+    if (!this._globe || !this._preTimelapseState) return
+
+    const state = this._preTimelapseState
+
+    // Restore the original arc color/stroke/dash callbacks
+    this._globe
+      .arcColor(d => this._arcColorWithDrift(d))
+      .arcStroke(d => this._arcStrokeDefault(d))
+      .arcDashAnimateTime(d => {
+        if (d.arcDashAnimateTime != null) return d.arcDashAnimateTime
+        if (d.driftIntensity != null) return Math.round(4000 - (d.driftIntensity * 2800))
+        return d.tier === 1 ? 2500 : 0
+      })
+      .arcDashLength(d => {
+        if (d.arcDashLength != null) return d.arcDashLength
+        if (d.driftIntensity != null) {
+          const f = d.framingShift || 'original'
+          if (f === 'original') return 1
+          if (f === 'neutralized') return 0.6
+          if (f === 'amplified') return 0.4
+          if (f === 'distorted') return 0.25
+          return 1
+        }
+        return d.tier === 1 ? 0.5 : 0
+      })
+      .arcDashGap(d => {
+        if (d.arcDashGap != null) return d.arcDashGap
+        if (d.driftIntensity != null) {
+          const f = d.framingShift || 'original'
+          if (f === 'original') return 0
+          if (f === 'neutralized') return 0.15
+          if (f === 'amplified') return 0.2
+          if (f === 'distorted') return 0.25
+          return 0
+        }
+        return d.tier === 1 ? 0.15 : 0
+      })
+
+    // Restore data layers
+    this._globe
+      .hexBinPointsData(this._cloneLayer(state.hexBinPointsData || []))
+      .arcsData(this._cloneLayer(state.arcsData || []))
+      .ringsData(this._cloneLayer(state.ringsData || []))
+
+    if (state.pointOfView) this._globe.pointOfView(state.pointOfView, 1000)
+
+    const controls = this._globe.controls()
+    controls.autoRotate = state.autoRotate ?? true
+    controls.autoRotateSpeed = state.autoRotateSpeed ?? 0.4
+
+    if (this._packetGroup) this._packetGroup.visible = state.packetVisible !== false
+    if (this._globe) this._updatePackets()
+
+    this._preTimelapseState = null
   }
 }
