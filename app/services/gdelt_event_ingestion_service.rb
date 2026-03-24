@@ -1,5 +1,5 @@
 # GdeltEventIngestionService
-# Queries the GDELT Events table (gdelt-bq.gdeltv2.events) for conflict events
+# Queries the GDELT Events table (gdelt-bq.gdeltv2.events_partitioned) for conflict events
 # and persists them as GdeltEvent records, linked to Articles where possible.
 #
 # The Events table is distinct from GKG: it uses CAMEO event codes (Actor1 → Actor2
@@ -18,9 +18,9 @@
 #   expected and acceptable for this query. The 5 GB hard limit remains the backstop.
 
 class GdeltEventIngestionService
-  # Wildcard table — GDELT events are date-sharded (events_YYYYMMDD).
-  # _TABLE_SUFFIX filter in the query selects only the relevant daily shards.
-  GDELT_EVENTS_TABLE = "gdelt-bq.gdeltv2.events_*".freeze
+  # GDELT v2 events use a single ingestion-time partitioned table.
+  # _PARTITIONTIME is the correct cost-safe filter (same pattern as GKG).
+  GDELT_EVENTS_TABLE = "gdelt-bq.gdeltv2.events_partitioned".freeze
   RESULTS_LIMIT      = 500
 
   # Filter: only ingest high-signal conflict events.
@@ -76,11 +76,9 @@ class GdeltEventIngestionService
   private
 
   def validate_sql_safety!(sql)
-    # GDELT events table is date-sharded (events_YYYYMMDD), NOT ingestion-time
-    # partitioned. Cost safety uses _TABLE_SUFFIX instead of _PARTITIONTIME.
-    unless sql.include?("_TABLE_SUFFIX")
+    unless sql.include?("_PARTITIONTIME")
       raise GdeltBigQueryService::QueryError,
-        "SAFETY BLOCK: Events query missing _TABLE_SUFFIX filter. This would scan the entire GDELT events dataset."
+        "SAFETY BLOCK: Events query missing _PARTITIONTIME filter. This would scan the entire GDELT events dataset."
     end
 
     unless sql.match?(/LIMIT\s+\d+/i)
@@ -99,11 +97,6 @@ class GdeltEventIngestionService
     quad_list  = CONFLICT_QUAD_CLASSES.join(", ")
     hwm_clause = high_water_mark ? "AND GLOBALEVENTID > #{high_water_mark.to_i}" : ""
 
-    # GDELT events table is date-sharded: individual tables named events_YYYYMMDD.
-    # The wildcard `events_*` + _TABLE_SUFFIX filter is the cost-safe way to
-    # query it — BigQuery only reads the matching daily shard(s), equivalent
-    # to partition pruning on ingestion-time partitioned tables.
-    # We query today + yesterday to avoid missing events near midnight UTC.
     <<~SQL
       SELECT
         GLOBALEVENTID,
@@ -132,9 +125,7 @@ class GdeltEventIngestionService
         ActionGeo_FullName,
         SOURCEURL
       FROM `#{GDELT_EVENTS_TABLE}`
-      WHERE _TABLE_SUFFIX BETWEEN
-          FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))
-        AND FORMAT_DATE('%Y%m%d', CURRENT_DATE())
+      WHERE _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
         AND (QuadClass IN (#{quad_list}) OR GoldsteinScale < #{GOLDSTEIN_THRESHOLD})
         AND NumSources >= #{MIN_SOURCES}
         #{hwm_clause}
