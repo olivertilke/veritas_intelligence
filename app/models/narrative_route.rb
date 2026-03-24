@@ -117,28 +117,62 @@ class NarrativeRoute < ApplicationRecord
 
   private
 
-  # Enrich segments in-place with linked GdeltEvent data.
-  # Batch-loads events for all article_ids to avoid N+1 queries.
-  # Each segment gets optional gdelt* fields — nil when no event is linked.
+  # Enrich segments in-place with linked GdeltEvent data and a combined threat score.
+  # Batch-loads events for all article_ids + the route's origin article to avoid N+1.
+  # Also computes veritasThreatScore: a unified 0–10 scale combining drift, GDELT, and AI analysis.
   def enrich_segments_with_gdelt!(segments)
-    article_ids = segments.flat_map { |s| [ s[:articleId], s[:sourceArticleId] ] }.compact.uniq
-    return if article_ids.empty?
+    # Collect all relevant article_ids: segment articles + route origin article
+    segment_article_ids = segments.flat_map { |s| [ s[:articleId], s[:sourceArticleId], s[:targetArticleId] ] }.compact.uniq
+    origin_id = origin_article&.id
+    all_article_ids = (segment_article_ids + [ origin_id ]).compact.uniq
 
-    # Pick the most destabilizing event per article (lowest Goldstein scale)
-    events_by_article = GdeltEvent
-      .where(article_id: article_ids)
-      .order(goldstein_scale: :asc)
-      .group_by(&:article_id)
+    # Batch-load GdeltEvents — pick the most destabilizing per article
+    events_by_article = if all_article_ids.any?
+      GdeltEvent.where(article_id: all_article_ids).order(goldstein_scale: :asc).group_by(&:article_id)
+    else
+      {}
+    end
+
+    # Route-level event fallback: if origin article has a linked event, propagate it
+    route_event = events_by_article[origin_id]&.first
 
     segments.each do |seg|
+      # Find best matching GdeltEvent: segment-specific first, then route-level fallback
       event = events_by_article[seg[:sourceArticleId]]&.first ||
-              events_by_article[seg[:articleId]]&.first
-      next unless event
+              events_by_article[seg[:articleId]]&.first ||
+              route_event
 
-      seg[:gdeltActorSummary]      = event.actor_summary
-      seg[:gdeltEventDescription]  = event.event_description
-      seg[:gdeltGoldsteinScale]    = event.goldstein_scale
-      seg[:gdeltQuadClassLabel]    = event.quad_class_label
+      if event
+        seg[:gdeltActorSummary]      = event.actor_summary
+        seg[:gdeltEventDescription]  = event.event_description
+        seg[:gdeltGoldsteinScale]    = event.goldstein_scale
+        seg[:gdeltQuadClassLabel]    = event.quad_class_label
+        seg[:gdeltQuadClass]         = event.quad_class
+      end
+
+      # Compute veritasThreatScore (0–10): max of all available threat signals
+      signals = []
+
+      # Signal 1: Drift intensity (0–1 → 0–10)
+      signals << (seg[:driftIntensity].to_f * 10) if seg[:driftIntensity]
+
+      # Signal 2: Goldstein scale (already -10 to +10, we use abs for threat magnitude)
+      signals << event&.goldstein_scale&.abs if event&.goldstein_scale
+
+      # Signal 3: QuadClass conflict indicator — verbal conflict = 6, material conflict = 8
+      if event&.quad_class
+        signals << 8.0 if event.quad_class == 4  # Material Conflict
+        signals << 6.0 if event.quad_class == 3  # Verbal Conflict
+      end
+
+      # Signal 4: Framing shift (distorted = 7, amplified = 5)
+      case seg[:framingShift]
+      when "distorted"  then signals << 7.0
+      when "amplified"  then signals << 5.0
+      when "neutralized" then signals << 3.0
+      end
+
+      seg[:veritasThreatScore] = signals.any? ? [ signals.max.round(1), 10.0 ].min : 0.0
     end
   end
 

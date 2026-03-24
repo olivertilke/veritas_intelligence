@@ -1,6 +1,11 @@
 <% journey_data = article.best_journey_data %>
 
-<div class="veritas-feed-card <%= 'new-entry' if local_assigns[:is_new] %>"
+<% threat_class = case article.ai_analysis&.threat_label
+                   when 'CRITICAL' then 'vt-threat-critical'
+                   when 'HIGH'     then 'vt-threat-high'
+                   else ''
+                   end %>
+<div class="veritas-feed-card <%= 'new-entry' if local_assigns[:is_new] %> <%= threat_class %>"
      id="<%= dom_id(article) %>"
      data-controller="feed-card"
      data-feed-card-lat-value="<%= article.latitude %>"

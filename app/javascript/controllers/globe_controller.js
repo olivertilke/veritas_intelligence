@@ -1547,45 +1547,47 @@ export default class extends Controller {
       return `rgba(${bright.r},${bright.g},${bright.b},1)`
     }
 
-    // Segments with drift data: 8-stop smooth gradient
+    // Segments with drift data: threat-aware color system
     if (d.driftIntensity != null && d.sourceName !== undefined) {
-      const intensity = d.driftIntensity
-      const framing = d.framingShift || 'original'
+      const threat = d.veritasThreatScore || 0
 
-      // Low drift or original framing: return single color (no gradient needed)
-      if (intensity < 0.1 || framing === 'original') {
-        const c = d.color || '#00ffcc'
-        // Still apply perspective/selection dimming
-        if (this._selectedArcArticleId) return this._hexToRgba(c, 0.12)
-        if (this._currentPerspective !== 'all' && d.perspectiveSlug !== this._currentPerspective) {
-          return this._hexToRgba(c, d.perspectiveSlug === 'unclassified' ? 0.18 : 0.05)
-        }
-        return d.tier === 2 ? this._hexToRgba(c, 0.35) : c
+      // Threat-based color: RED (conflict) → ORANGE (threat) → AMBER (warning) → STEEL (neutral)
+      let threatColor
+      if (d.gdeltQuadClass === 4) {
+        // Material Conflict: always aggressive red
+        threatColor = '#ff2020'
+      } else if (d.gdeltQuadClass === 3 || threat >= 7) {
+        // Verbal Conflict or high threat: hot red
+        threatColor = '#ff4444'
+      } else if (threat >= 5) {
+        // Significant threat: orange
+        threatColor = '#ff8c00'
+      } else if (threat >= 3) {
+        // Moderate: amber/yellow
+        threatColor = '#ffd700'
+      } else {
+        // Low threat: neutral steel blue (NOT green)
+        threatColor = '#6088a0'
       }
 
-      const sourceColor = d.color || '#00ffcc'
-      let targetColor = this._getDriftTargetColor(framing, intensity)
+      // Build gradient from neutral start to threat color
+      const sourceColor = '#4a6070'  // neutral steel (not green)
 
-      // High-conflict override: Goldstein < -5 forces aggressive red regardless of framing
-      if (d.gdeltGoldsteinScale != null && d.gdeltGoldsteinScale < -5) {
-        targetColor = d.gdeltGoldsteinScale < -8 ? '#ff0000' : '#ff3300'
-      }
-
-      // Apply perspective / selection dimming on the gradient
+      // Apply perspective / selection dimming
       if (this._selectedArcArticleId) {
-        return this._buildGradientStops(sourceColor, targetColor, 0.12)
+        return this._buildGradientStops(sourceColor, threatColor, 0.12)
       }
       if (this._currentPerspective !== 'all') {
         const isActive = d.perspectiveSlug === this._currentPerspective
         if (!isActive) {
           const dimAlpha = d.perspectiveSlug === 'unclassified' ? 0.18 : 0.05
-          return this._buildGradientStops(sourceColor, targetColor, dimAlpha)
+          return this._buildGradientStops(sourceColor, threatColor, dimAlpha)
         }
       }
       if (d.tier === 2) {
-        return this._buildGradientStops(sourceColor, targetColor, 0.35)
+        return this._buildGradientStops(sourceColor, threatColor, 0.35)
       }
-      return this._buildGradientStops(sourceColor, targetColor, null)
+      return this._buildGradientStops(sourceColor, threatColor, null)
     }
 
     // Fallback: existing perspective-based color logic for non-segment arcs
@@ -1607,13 +1609,14 @@ export default class extends Controller {
       const gdeltEventDescription = d.gdeltEventDescription || null
       const gdeltGoldsteinScale   = d.gdeltGoldsteinScale   != null ? d.gdeltGoldsteinScale : null
       const gdeltQuadClassLabel   = d.gdeltQuadClassLabel   || null
+      const threat = d.veritasThreatScore || 0
 
-      const driftLevel = intensity > 0.7 ? 'CRITICAL' :
-                         intensity > 0.4 ? 'SIGNIFICANT' :
-                         intensity > 0.15 ? 'MODERATE' : 'MINIMAL'
-      const driftLevelColor = intensity > 0.7 ? '#ff2d2d' :
-                              intensity > 0.4 ? '#ff8c00' :
-                              intensity > 0.15 ? '#ffd700' : '#00ffcc'
+      const driftLevel = threat >= 7 ? 'CRITICAL' :
+                         threat >= 5 ? 'SIGNIFICANT' :
+                         threat >= 3 ? 'MODERATE' : 'MINIMAL'
+      const driftLevelColor = threat >= 7 ? '#ff2d2d' :
+                              threat >= 5 ? '#ff8c00' :
+                              threat >= 3 ? '#ffd700' : '#6088a0'
 
       const headlines = (d.sourceHeadline && d.targetHeadline) ? `
         <div style="font-size:10px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.06);">
@@ -1626,8 +1629,8 @@ export default class extends Controller {
         <div style="
           background:rgba(10,12,18,0.92);
           backdrop-filter:blur(12px);
-          border:1px solid rgba(0,255,204,0.15);
-          border-left:3px solid ${framingColor};
+          border:1px solid ${threat >= 5 ? 'rgba(255,60,60,0.25)' : 'rgba(0,255,204,0.15)'};
+          border-left:3px solid ${driftLevelColor};
           border-radius:6px;
           padding:14px 18px;
           font-family:'JetBrains Mono','Fira Code','SF Mono',monospace;
@@ -1640,11 +1643,15 @@ export default class extends Controller {
           <div style="font-size:9px;text-transform:uppercase;letter-spacing:2px;color:#607080;margin-bottom:8px;">
             NARRATIVE DRIFT ANALYSIS
           </div>
-          <div style="font-size:12px;margin-bottom:10px;">
-            <span style="color:#00ffcc;">${d.sourceCountry || '?'}</span>
-            <span style="color:#607080;margin:0 6px;">→</span>
-            <span style="color:${framingColor};">${d.targetCountry || '?'}</span>
-          </div>
+          ${gdeltActorSummary ? `
+            <div style="font-size:13px;font-weight:700;color:#ff9090;margin-bottom:6px;">${gdeltActorSummary}</div>
+          ` : `
+            <div style="font-size:12px;margin-bottom:6px;">
+              <span style="color:#00ffcc;">${d.sourceCountry || 'Unknown'}</span>
+              <span style="color:#607080;margin:0 6px;">→</span>
+              <span style="color:${framingColor};">${d.targetCountry || 'Unknown'}</span>
+            </div>
+          `}
           <div style="font-size:10px;color:#8090a0;margin-bottom:10px;">
             ${d.sourceName || 'Unknown'} → ${d.targetSourceName || 'Unknown'}
           </div>
@@ -1673,17 +1680,16 @@ export default class extends Controller {
             </div>
           ` : ''}
           <div style="margin-top:10px;">
-            <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;margin-bottom:4px;">Drift Intensity</div>
+            <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;margin-bottom:4px;">Threat Level</div>
             <div style="width:100%;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;">
-              <div style="width:${Math.round(intensity * 100)}%;height:100%;background:linear-gradient(90deg,#00ffcc,${driftLevelColor});border-radius:2px;"></div>
+              <div style="width:${Math.round(threat * 10)}%;height:100%;background:linear-gradient(90deg,#6088a0,${driftLevelColor});border-radius:2px;"></div>
             </div>
           </div>
           ${gdeltActorSummary ? `
             <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,45,45,0.2);">
-              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#ff6060;margin-bottom:5px;">⚔ Conflict Intelligence</div>
-              <div style="font-size:11px;font-weight:600;color:#ff9090;margin-bottom:3px;">${gdeltActorSummary}</div>
-              ${gdeltEventDescription ? `<div style="font-size:10px;color:#c08080;">${gdeltEventDescription}</div>` : ''}
-              <div style="display:flex;gap:10px;margin-top:5px;">
+              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#ff6060;margin-bottom:5px;">CONFLICT INTELLIGENCE</div>
+              ${gdeltEventDescription ? `<div style="font-size:10px;color:#c08080;margin-bottom:3px;">${gdeltEventDescription}</div>` : ''}
+              <div style="display:flex;gap:10px;margin-top:3px;">
                 ${gdeltQuadClassLabel ? `<span style="font-size:9px;color:#a06060;text-transform:uppercase;">${gdeltQuadClassLabel}</span>` : ''}
                 ${gdeltGoldsteinScale != null ? `<span style="font-size:9px;color:${gdeltGoldsteinScale < -7 ? '#ff2d2d' : '#ff8060'};">Goldstein: ${gdeltGoldsteinScale.toFixed(1)}</span>` : ''}
               </div>
@@ -2008,35 +2014,41 @@ export default class extends Controller {
     this._globe
       .arcColor(d => {
         const opacity = d._opacity != null ? d._opacity : 1
-        const intensity = d.driftIntensity || 0
-        const framing = d.framingShift || 'original'
+        const threat = d.veritasThreatScore || 0
 
         // Latest arc gets a subtle brightness boost
         const boost = d._isLatest ? 1.3 : 1.0
 
-        // Neutral baseline for low-drift / original framing (NOT green)
-        if (intensity < 0.1 || framing === 'original') {
-          const r = Math.min(255, Math.round(120 * boost))
-          const g = Math.min(255, Math.round(140 * boost))
-          const b = Math.min(255, Math.round(160 * boost))
-          return `rgba(${r}, ${g}, ${b}, ${0.7 * opacity})`
+        // Threat-based target color (same logic as main arc color)
+        let targetRGB
+        if (d.gdeltQuadClass === 4 || threat >= 7) {
+          targetRGB = { r: 255, g: 40, b: 40 }
+        } else if (d.gdeltQuadClass === 3 || threat >= 5) {
+          targetRGB = { r: 255, g: 140, b: 0 }
+        } else if (threat >= 3) {
+          targetRGB = { r: 255, g: 215, b: 0 }
+        } else {
+          targetRGB = { r: 96, g: 136, b: 160 }
         }
 
-        // 8-stop gradient: neutral start -> framing-specific end
+        // Neutral steel source
         const sourceColor = {
-          r: Math.min(255, Math.round(120 * boost)),
-          g: Math.min(255, Math.round(140 * boost)),
-          b: Math.min(255, Math.round(160 * boost)),
+          r: Math.min(255, Math.round(74 * boost)),
+          g: Math.min(255, Math.round(96 * boost)),
+          b: Math.min(255, Math.round(112 * boost)),
           a: 0.7 * opacity
         }
-        const targetColor = this._getDriftTargetColor(framing, intensity)
-        // Boost target brightness for latest arc
-        if (d._isLatest) {
-          targetColor.r = Math.min(255, Math.round(targetColor.r * 1.2))
-          targetColor.g = Math.min(255, Math.round(targetColor.g * 1.2))
-          targetColor.b = Math.min(255, Math.round(targetColor.b * 1.2))
+        const targetColor = {
+          r: Math.min(255, Math.round(targetRGB.r * boost)),
+          g: Math.min(255, Math.round(targetRGB.g * boost)),
+          b: Math.min(255, Math.round(targetRGB.b * boost)),
+          a: Math.max(0.5, 0.7 * opacity)
         }
-        targetColor.a = Math.max(0.3, targetColor.a) * opacity
+
+        // Low threat: return single neutral color (no gradient needed)
+        if (threat < 2) {
+          return `rgba(${sourceColor.r}, ${sourceColor.g}, ${sourceColor.b}, ${sourceColor.a})`
+        }
 
         const stops = 8
         const colors = []
