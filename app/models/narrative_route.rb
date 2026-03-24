@@ -150,27 +150,40 @@ class NarrativeRoute < ApplicationRecord
         seg[:gdeltQuadClass]         = event.quad_class
       end
 
-      # Compute veritasThreatScore (0–10): max of all available threat signals
+      # Compute veritasThreatScore (0–10): max of all available threat signals.
+      # The AI analysis threat_level is the most reliable signal — it exists for
+      # every article. GDELT events are sparse (low URL match rate), so they are
+      # a bonus, not the primary driver.
       signals = []
 
-      # Signal 1: Drift intensity (0–1 → 0–10)
-      signals << (seg[:driftIntensity].to_f * 10) if seg[:driftIntensity]
-
-      # Signal 2: Goldstein scale (already -10 to +10, we use abs for threat magnitude)
-      signals << event&.goldstein_scale&.abs if event&.goldstein_scale
-
-      # Signal 3: QuadClass conflict indicator — verbal conflict = 6, material conflict = 8
-      if event&.quad_class
-        signals << 8.0 if event.quad_class == 4  # Material Conflict
-        signals << 6.0 if event.quad_class == 3  # Verbal Conflict
+      # Signal 1 (STRONGEST): AI analysis threat_level — available for every article
+      threat_label = seg[:targetThreatLevel] || seg[:sourceThreatLevel]
+      case threat_label
+      when "CRITICAL"   then signals << 9.0
+      when "HIGH"       then signals << 7.0
+      when "MODERATE"   then signals << 5.0
+      when "LOW"        then signals << 2.5
+      when "NEGLIGIBLE" then signals << 1.0
       end
 
-      # Signal 4: Framing shift (distorted = 7, amplified = 5)
+      # Signal 2: GDELT Goldstein scale (0–10 absolute)
+      signals << event&.goldstein_scale&.abs if event&.goldstein_scale
+
+      # Signal 3: GDELT QuadClass conflict indicator
+      if event&.quad_class
+        signals << 8.5 if event.quad_class == 4  # Material Conflict
+        signals << 6.5 if event.quad_class == 3  # Verbal Conflict
+      end
+
+      # Signal 4: Drift framing shift
       case seg[:framingShift]
       when "distorted"  then signals << 7.0
       when "amplified"  then signals << 5.0
       when "neutralized" then signals << 3.0
       end
+
+      # Signal 5: Drift intensity (0–1 → 0–10)
+      signals << (seg[:driftIntensity].to_f * 10) if seg[:driftIntensity]
 
       seg[:veritasThreatScore] = signals.any? ? [ signals.max.round(1), 10.0 ].min : 0.0
     end
@@ -218,6 +231,7 @@ class NarrativeRoute < ApplicationRecord
         rawSentimentLabel: raw_sentiment.presence || "Unknown",
         sentimentColor: article&.ai_analysis&.sentiment_color || sentiment_color_for_label(raw_sentiment),
         trustScore: article&.ai_analysis&.trust_score&.round(1),
+        threatLevel: article&.ai_analysis&.threat_label,
         perspectiveSlug: classifier[:slug],
         perspectiveLabel: SourceClassifierService.display_name(classifier[:slug]),
         perspectiveColor: perspective_color(classifier[:slug]),
@@ -294,7 +308,9 @@ class NarrativeRoute < ApplicationRecord
         targetPerspectiveColor: target_hop[:perspectiveColor],
         perspectiveSlug: target_hop[:perspectiveSlug],
         perspectiveLabel: target_hop[:perspectiveLabel],
-        perspectiveColor: target_hop[:perspectiveColor]
+        perspectiveColor: target_hop[:perspectiveColor],
+        sourceThreatLevel: source_hop[:threatLevel],
+        targetThreatLevel: target_hop[:threatLevel]
       }
     end
   end

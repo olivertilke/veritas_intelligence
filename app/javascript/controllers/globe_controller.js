@@ -1645,25 +1645,25 @@ export default class extends Controller {
           </div>
           ${gdeltActorSummary ? `
             <div style="font-size:13px;font-weight:700;color:#ff9090;margin-bottom:6px;">${gdeltActorSummary}</div>
-          ` : `
+          ` : (d.sourceCountry && d.targetCountry) ? `
             <div style="font-size:12px;margin-bottom:6px;">
-              <span style="color:#00ffcc;">${d.sourceCountry || 'Unknown'}</span>
+              <span style="color:#00ffcc;">${d.sourceCountry}</span>
               <span style="color:#607080;margin:0 6px;">→</span>
-              <span style="color:${framingColor};">${d.targetCountry || 'Unknown'}</span>
+              <span style="color:${framingColor};">${d.targetCountry}</span>
             </div>
-          `}
-          <div style="font-size:10px;color:#8090a0;margin-bottom:10px;">
-            ${d.sourceName || 'Unknown'} → ${d.targetSourceName || 'Unknown'}
+          ` : ''}
+          <div style="font-size:10px;color:#8090a0;margin-bottom:${(d.sourceCountry || gdeltActorSummary) ? '10' : '6'}px;">
+            ${d.sourceName || d.sourceCountry || '?'} → ${d.targetSourceName || d.targetCountry || '?'}
           </div>
           ${headlines}
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
             <div>
-              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Framing</div>
-              <div style="font-size:11px;color:${framingColor};font-weight:600;">${framing.toUpperCase()}</div>
+              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Threat</div>
+              <div style="font-size:11px;color:${driftLevelColor};font-weight:600;">${driftLevel}</div>
             </div>
             <div>
-              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Drift Level</div>
-              <div style="font-size:11px;color:${driftLevelColor};font-weight:600;">${driftLevel}</div>
+              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Framing</div>
+              <div style="font-size:11px;color:${framingColor};font-weight:600;">${framing.toUpperCase()}</div>
             </div>
             <div>
               <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Sentiment</div>
