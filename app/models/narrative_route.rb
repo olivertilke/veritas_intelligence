@@ -118,25 +118,24 @@ class NarrativeRoute < ApplicationRecord
   private
 
   # ──────────────────────────────────────────────────────────────────────────
-  # veritasThreatScore v2: Weighted multi-signal arc scoring
+  # veritasThreatScore v3: Semantically correct arc scoring
   #
-  # An arc represents a RELATIONSHIP between articles — not a single article's
-  # severity. The score answers: "How concerning is this narrative propagation?"
+  # An arc represents a NARRATIVE RELATIONSHIP between articles.
+  # The score answers: "How concerning is this narrative propagation?"
   #
-  # Three signal channels, weighted sum (not max):
-  #   0.45 × threat_context  — WHAT is being discussed (topic severity)
-  #   0.40 × drift_signal    — HOW the narrative transformed (the arc's meaning)
-  #   0.15 × gdelt_bonus     — real-world conflict confirmation (optional bonus)
+  # Three signal channels, weighted sum:
+  #   0.45 × threat_context    — WHAT is being discussed (topic severity)
+  #   0.40 × drift_effective   — HOW it transformed (modulated by context)
+  #   0.15 × gdelt_bonus       — real-world conflict confirmation (optional)
   #
-  # Why weighted sum instead of max():
-  #   max() makes a single dominant signal paint the entire arc. A weighted sum
-  #   lets all signals contribute proportionally. A CRITICAL article with zero
-  #   drift should score lower than a HIGH article with heavy distortion —
-  #   because the distortion IS the threat an OSINT analyst cares about.
-  #
-  # Why average threat (not max):
-  #   An arc between CRITICAL and NEGLIGIBLE is a mixed-severity arc, not a
-  #   CRITICAL arc. The transformation between them matters more than the peak.
+  # v3 improvements over v2:
+  #   1. Drift is modulated by threat context — celebrity clickbait drift
+  #      doesn't produce red arcs (dampened by low threat relevance)
+  #   2. Framing direction: escalation (neutral→negative) amplifies drift,
+  #      de-escalation (negative→neutral) dampens it
+  #   3. No hard score floors — replaced by separate visibilityWeight
+  #   4. Arc confidence from semantic similarity + time proximity
+  #   5. Each segment exposes signal breakdown for explainability
   # ──────────────────────────────────────────────────────────────────────────
   THREAT_LEVEL_SCORES = {
     "CRITICAL"   => 10.0,
@@ -149,6 +148,10 @@ class NarrativeRoute < ApplicationRecord
   SCORE_WEIGHT_THREAT = 0.45
   SCORE_WEIGHT_DRIFT  = 0.40
   SCORE_WEIGHT_GDELT  = 0.15
+
+  # Time proximity decays over 48 hours — narratives spreading within hours
+  # are more concerning than those spreading over days.
+  TIME_PROXIMITY_HALFLIFE = 48.hours.to_i  # seconds
 
   def enrich_segments_with_gdelt!(segments)
     # Batch-load GdeltEvents for all article_ids + route origin to avoid N+1
@@ -178,61 +181,101 @@ class NarrativeRoute < ApplicationRecord
         seg[:gdeltQuadClass]         = event.quad_class
       end
 
-      # --- Channel 1: Threat Context (0–10) ---
-      # Average of source and target threat levels. Uses average (not max) because
-      # the arc represents a pair — a CRITICAL→LOW arc is less alarming than CRITICAL→CRITICAL.
+      # ── Channel 1: Threat Context (0–10) ──
+      # Average of source and target threat levels. An arc between CRITICAL
+      # and LOW is a mixed-severity arc (avg 6.25), not a CRITICAL arc (10).
       source_threat = THREAT_LEVEL_SCORES[seg[:sourceThreatLevel].to_s] || 0.0
       target_threat = THREAT_LEVEL_SCORES[seg[:targetThreatLevel].to_s] || 0.0
       threat_context = if source_threat > 0 && target_threat > 0
         (source_threat + target_threat) / 2.0
+      elsif source_threat > 0 || target_threat > 0
+        [ source_threat, target_threat ].max  # one side missing → use what we have
       else
-        # Only one side has data — use it directly (better than averaging with 0)
-        [ source_threat, target_threat ].max
+        0.0  # no AI analysis on either side
       end
+      threat_normalized = (threat_context / 10.0).clamp(0.0, 1.0)
 
-      # --- Channel 2: Drift Signal (0–10) ---
-      # How much the narrative transformed. This IS the arc's core meaning.
-      # compute_drift_intensity already combines framing (50%), sentiment (30%),
-      # and semantic distance (20%) into a 0–1 score. Scale to 0–10.
-      drift_signal = (seg[:driftIntensity].to_f * 10.0).clamp(0.0, 10.0)
+      # ── Channel 2: Drift Signal, modulated (0–10) ──
+      raw_drift = (seg[:driftIntensity].to_f * 10.0).clamp(0.0, 10.0)
 
-      # --- Channel 3: GDELT Bonus (0–10) ---
-      # Real-world conflict confirmation. Optional — when absent, it contributes 0
-      # and its weight redistributes naturally (the arc just has less confidence).
+      # Dampening: drift matters proportionally to threat context.
+      # sqrt() curve: preserves high-threat drift (CRITICAL keeps ~100%),
+      # dampens low-threat noise harder (NEGLIGIBLE keeps ~32%).
+      #   CRITICAL (1.0) → keeps 100%     HIGH (0.75) → keeps 87%
+      #   MODERATE (0.50) → keeps 71%     LOW (0.25)  → keeps 50%
+      #   NEGLIGIBLE (0.1) → keeps 32%    No threat (0) → keeps 10%
+      # The 0.1 base prevents zero-multiplication (some drift is always visible).
+      threat_dampening = 0.1 + 0.9 * Math.sqrt(threat_normalized)
+      drift_dampened = raw_drift * threat_dampening
+
+      # Framing direction: escalation (sentiment moving negative) amplifies concern,
+      # de-escalation (sentiment moving positive) dampens it.
+      # sentimentDelta = target - source. Negative delta = escalation (getting worse).
+      sentiment_delta = seg[:sentimentDelta].to_f  # -4 to +4 range
+      # Map to multiplier: escalation → up to 1.2x, de-escalation → down to 0.8x
+      # Sigmoid-like: tanh squashes extreme values smoothly.
+      direction_multiplier = 1.0 - (0.2 * Math.tanh(sentiment_delta * 0.5))
+      # Result: delta=-2 → 1.15x (escalation), delta=+2 → 0.85x (de-escalation)
+
+      drift_effective = (drift_dampened * direction_multiplier).clamp(0.0, 10.0)
+
+      # ── Channel 3: GDELT Bonus (0–10) ──
+      # Optional conflict confirmation from real-world events.
       gdelt_bonus = 0.0
       if event
-        # Goldstein scale: -10 (destabilizing) to +10 (stabilizing).
-        # We care about destabilizing events — use negative values as positive threat.
         goldstein_threat = event.goldstein_scale ? (-event.goldstein_scale).clamp(0.0, 10.0) : 0.0
-        # QuadClass bump: material conflict = strong confirmation, verbal = moderate
         quad_bump = case event.quad_class
-                    when 4 then 3.0  # Material Conflict: strong real-world action
-                    when 3 then 1.5  # Verbal Conflict: rhetoric, not action
+                    when 4 then 3.0   # Material Conflict (real-world action)
+                    when 3 then 1.5   # Verbal Conflict (rhetoric)
                     else 0.0
                     end
         gdelt_bonus = (goldstein_threat + quad_bump).clamp(0.0, 10.0)
       end
 
-      # --- Weighted composition ---
+      # ── Weighted composition ──
       raw_score = (SCORE_WEIGHT_THREAT * threat_context) +
-                  (SCORE_WEIGHT_DRIFT  * drift_signal) +
+                  (SCORE_WEIGHT_DRIFT  * drift_effective) +
                   (SCORE_WEIGHT_GDELT  * gdelt_bonus)
 
-      # Sigmoid-like smoothing: prevents extreme spikes while preserving spread.
-      # Without smoothing, a CRITICAL (10) + distorted (10) + GDELT conflict (10) = 10.0
-      # which is correct. But a CRITICAL (10) + original (0) + no GDELT (0) = 4.5 which
-      # might feel low. The floor ensures even high-threat topics get a visible color.
-      # Floor: if EITHER article is CRITICAL/HIGH, enforce a minimum score of 4.0
-      # This prevents a CRITICAL article from being invisible just because drift is low.
-      floor = if threat_context >= 7.5
-        4.0  # At least MODERATE visibility for high-threat topics
-      elsif threat_context >= 5.0
-        2.5  # Visible but not alarming for moderate topics
-      else
-        0.0
-      end
+      # ── Arc confidence (0–1) ──
+      # How trustworthy is this narrative link? Weak/coincidental links get dampened.
+      # Based on data already computed per segment:
+      semantic_sim = (seg[:confidenceScore] || 0.5).to_f.clamp(0.0, 1.0)
+      delay = (seg[:delaySeconds] || 0).to_i.abs
+      # Time proximity: exponential decay over TIME_PROXIMITY_HALFLIFE.
+      # 0 hours → 1.0, 24 hours → 0.71, 48 hours → 0.50, 96 hours → 0.25
+      time_proximity = Math.exp(-0.693 * delay.to_f / TIME_PROXIMITY_HALFLIFE)
+      confidence = (0.7 * semantic_sim + 0.3 * time_proximity).clamp(0.0, 1.0)
 
-      seg[:veritasThreatScore] = [ raw_score, floor, 0.0 ].max.clamp(0.0, 10.0).round(1)
+      # Final score: raw score dampened by link confidence
+      final_score = (raw_score * confidence).clamp(0.0, 10.0).round(1)
+
+      # ── Visibility weight (separate from score) ──
+      # Controls arc opacity/thickness. Even a low-scoring arc on a high-threat
+      # topic should be somewhat visible — the topic matters even if drift is low.
+      # But the COLOR (from score) correctly reflects that no manipulation occurred.
+      visibility = (0.3 + 0.7 * threat_normalized).clamp(0.3, 1.0).round(2)
+
+      # ── Edge case handling ──
+      # No AI analysis AND no drift AND no GDELT → score 0, visibility minimum
+      has_any_signal = threat_context > 0 || raw_drift > 0.5 || gdelt_bonus > 0
+
+      seg[:veritasThreatScore] = has_any_signal ? final_score : 0.0
+      seg[:visibilityWeight]   = has_any_signal ? visibility : 0.3
+      seg[:arcConfidence]      = confidence.round(2)
+
+      # ── Signal breakdown for explainability / debug tooltip ──
+      seg[:signalBreakdown] = {
+        threatContext:       threat_context.round(1),
+        driftRaw:            raw_drift.round(1),
+        driftEffective:      drift_effective.round(1),
+        driftDampening:      threat_dampening.round(2),
+        directionMultiplier: direction_multiplier.round(2),
+        gdeltBonus:          gdelt_bonus.round(1),
+        rawScore:            raw_score.round(1),
+        confidence:          confidence.round(2),
+        finalScore:          final_score
+      }
     end
   end
 

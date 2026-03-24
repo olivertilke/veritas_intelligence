@@ -247,10 +247,11 @@ export default class extends Controller {
           return 2.5
         }
         if (d.arcStroke != null) return d.arcStroke
-        // Drift-modulated thickness: high drift = slightly thicker arc
-        if (d.driftIntensity != null) {
-          const base = d.tier === 1 ? 1.2 : (d.tier === 2 ? 0.5 : 0.4)
-          return base + (d.driftIntensity * 0.8)
+        // Visibility-weighted thickness: high confidence + high threat = thicker
+        if (d.visibilityWeight != null) {
+          const vis = d.visibilityWeight || 0.3
+          const base = d.tier === 1 ? 1.0 : (d.tier === 2 ? 0.4 : 0.3)
+          return base + (vis * 1.0)  // 0.3–1.3 range on top of base
         }
         if (d.tier === 1) return 1.2
         if (d.tier === 2) return 0.5
@@ -1550,44 +1551,42 @@ export default class extends Controller {
     // Segments with drift data: threat-aware color system
     if (d.driftIntensity != null && d.sourceName !== undefined) {
       const threat = d.veritasThreatScore || 0
+      const vis = d.visibilityWeight || 0.3
 
       // Threat-based color: RED (conflict) → ORANGE (threat) → AMBER (warning) → STEEL (neutral)
       let threatColor
       if (d.gdeltQuadClass === 4) {
-        // Material Conflict: always aggressive red
-        threatColor = '#ff2020'
+        threatColor = '#ff2020'       // Material Conflict: aggressive red
       } else if (d.gdeltQuadClass === 3 || threat >= 7) {
-        // Verbal Conflict or high threat: hot red
-        threatColor = '#ff4444'
+        threatColor = '#ff4444'       // Verbal Conflict or high threat
       } else if (threat >= 5) {
-        // Significant threat: orange
-        threatColor = '#ff8c00'
+        threatColor = '#ff8c00'       // Significant threat: orange
       } else if (threat >= 3) {
-        // Moderate: amber/yellow
-        threatColor = '#ffd700'
+        threatColor = '#ffd700'       // Moderate: amber
       } else {
-        // Low threat: neutral steel blue (NOT green)
-        threatColor = '#6088a0'
+        threatColor = '#6088a0'       // Low: neutral steel
       }
 
-      // Build gradient from neutral start to threat color
-      const sourceColor = '#4a6070'  // neutral steel (not green)
+      const sourceColor = '#4a6070'
 
-      // Apply perspective / selection dimming
+      // visibilityWeight modulates opacity — low-confidence or low-drift arcs fade
+      const baseAlpha = vis * 0.85  // 0.26 (min) to 0.85 (max)
+
+      // Apply perspective / selection dimming ON TOP of visibility
       if (this._selectedArcArticleId) {
         return this._buildGradientStops(sourceColor, threatColor, 0.12)
       }
       if (this._currentPerspective !== 'all') {
         const isActive = d.perspectiveSlug === this._currentPerspective
         if (!isActive) {
-          const dimAlpha = d.perspectiveSlug === 'unclassified' ? 0.18 : 0.05
+          const dimAlpha = d.perspectiveSlug === 'unclassified' ? 0.15 : 0.04
           return this._buildGradientStops(sourceColor, threatColor, dimAlpha)
         }
       }
       if (d.tier === 2) {
-        return this._buildGradientStops(sourceColor, threatColor, 0.35)
+        return this._buildGradientStops(sourceColor, threatColor, baseAlpha * 0.5)
       }
-      return this._buildGradientStops(sourceColor, threatColor, null)
+      return this._buildGradientStops(sourceColor, threatColor, baseAlpha)
     }
 
     // Fallback: existing perspective-based color logic for non-segment arcs
@@ -1680,10 +1679,20 @@ export default class extends Controller {
             </div>
           ` : ''}
           <div style="margin-top:10px;">
-            <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;margin-bottom:4px;">Threat Level</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Score ${threat.toFixed(1)}/10</div>
+              <div style="font-size:8px;color:#506070;">conf ${Math.round((d.arcConfidence || 0) * 100)}%</div>
+            </div>
             <div style="width:100%;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;">
               <div style="width:${Math.round(threat * 10)}%;height:100%;background:linear-gradient(90deg,#6088a0,${driftLevelColor});border-radius:2px;"></div>
             </div>
+            ${d.signalBreakdown ? `
+              <div style="display:flex;gap:8px;margin-top:5px;font-size:8px;color:#506070;">
+                <span>CTX:${d.signalBreakdown.threatContext}</span>
+                <span>DFT:${d.signalBreakdown.driftEffective}</span>
+                ${d.signalBreakdown.gdeltBonus > 0 ? `<span>GDT:${d.signalBreakdown.gdeltBonus}</span>` : ''}
+              </div>
+            ` : ''}
           </div>
           ${gdeltActorSummary ? `
             <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,45,45,0.2);">
@@ -2015,6 +2024,7 @@ export default class extends Controller {
       .arcColor(d => {
         const opacity = d._opacity != null ? d._opacity : 1
         const threat = d.veritasThreatScore || 0
+        const vis = d.visibilityWeight || 0.3
 
         // Latest arc gets a subtle brightness boost
         const boost = d._isLatest ? 1.3 : 1.0
@@ -2031,22 +2041,24 @@ export default class extends Controller {
           targetRGB = { r: 96, g: 136, b: 160 }
         }
 
-        // Neutral steel source
+        // visibilityWeight modulates base opacity
+        const visAlpha = vis * 0.85 * opacity
+
         const sourceColor = {
           r: Math.min(255, Math.round(74 * boost)),
           g: Math.min(255, Math.round(96 * boost)),
           b: Math.min(255, Math.round(112 * boost)),
-          a: 0.7 * opacity
+          a: visAlpha
         }
         const targetColor = {
           r: Math.min(255, Math.round(targetRGB.r * boost)),
           g: Math.min(255, Math.round(targetRGB.g * boost)),
           b: Math.min(255, Math.round(targetRGB.b * boost)),
-          a: Math.max(0.5, 0.7 * opacity)
+          a: Math.max(0.3, visAlpha)
         }
 
-        // Low threat: return single neutral color (no gradient needed)
-        if (threat < 2) {
+        // Low threat + low visibility: single neutral color
+        if (threat < 2 && vis < 0.5) {
           return `rgba(${sourceColor.r}, ${sourceColor.g}, ${sourceColor.b}, ${sourceColor.a})`
         }
 
