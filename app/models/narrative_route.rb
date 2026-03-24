@@ -117,27 +117,55 @@ class NarrativeRoute < ApplicationRecord
 
   private
 
-  # Enrich segments in-place with linked GdeltEvent data and a combined threat score.
-  # Batch-loads events for all article_ids + the route's origin article to avoid N+1.
-  # Also computes veritasThreatScore: a unified 0–10 scale combining drift, GDELT, and AI analysis.
+  # ──────────────────────────────────────────────────────────────────────────
+  # veritasThreatScore v2: Weighted multi-signal arc scoring
+  #
+  # An arc represents a RELATIONSHIP between articles — not a single article's
+  # severity. The score answers: "How concerning is this narrative propagation?"
+  #
+  # Three signal channels, weighted sum (not max):
+  #   0.45 × threat_context  — WHAT is being discussed (topic severity)
+  #   0.40 × drift_signal    — HOW the narrative transformed (the arc's meaning)
+  #   0.15 × gdelt_bonus     — real-world conflict confirmation (optional bonus)
+  #
+  # Why weighted sum instead of max():
+  #   max() makes a single dominant signal paint the entire arc. A weighted sum
+  #   lets all signals contribute proportionally. A CRITICAL article with zero
+  #   drift should score lower than a HIGH article with heavy distortion —
+  #   because the distortion IS the threat an OSINT analyst cares about.
+  #
+  # Why average threat (not max):
+  #   An arc between CRITICAL and NEGLIGIBLE is a mixed-severity arc, not a
+  #   CRITICAL arc. The transformation between them matters more than the peak.
+  # ──────────────────────────────────────────────────────────────────────────
+  THREAT_LEVEL_SCORES = {
+    "CRITICAL"   => 10.0,
+    "HIGH"       => 7.5,
+    "MODERATE"   => 5.0,
+    "LOW"        => 2.5,
+    "NEGLIGIBLE" => 1.0
+  }.freeze
+
+  SCORE_WEIGHT_THREAT = 0.45
+  SCORE_WEIGHT_DRIFT  = 0.40
+  SCORE_WEIGHT_GDELT  = 0.15
+
   def enrich_segments_with_gdelt!(segments)
-    # Collect all relevant article_ids: segment articles + route origin article
+    # Batch-load GdeltEvents for all article_ids + route origin to avoid N+1
     segment_article_ids = segments.flat_map { |s| [ s[:articleId], s[:sourceArticleId], s[:targetArticleId] ] }.compact.uniq
     origin_id = origin_article&.id
     all_article_ids = (segment_article_ids + [ origin_id ]).compact.uniq
 
-    # Batch-load GdeltEvents — pick the most destabilizing per article
     events_by_article = if all_article_ids.any?
       GdeltEvent.where(article_id: all_article_ids).order(goldstein_scale: :asc).group_by(&:article_id)
     else
       {}
     end
 
-    # Route-level event fallback: if origin article has a linked event, propagate it
     route_event = events_by_article[origin_id]&.first
 
     segments.each do |seg|
-      # Find best matching GdeltEvent: segment-specific first, then route-level fallback
+      # --- GDELT enrichment (optional) ---
       event = events_by_article[seg[:sourceArticleId]]&.first ||
               events_by_article[seg[:articleId]]&.first ||
               route_event
@@ -150,42 +178,61 @@ class NarrativeRoute < ApplicationRecord
         seg[:gdeltQuadClass]         = event.quad_class
       end
 
-      # Compute veritasThreatScore (0–10): max of all available threat signals.
-      # The AI analysis threat_level is the most reliable signal — it exists for
-      # every article. GDELT events are sparse (low URL match rate), so they are
-      # a bonus, not the primary driver.
-      signals = []
-
-      # Signal 1 (STRONGEST): AI analysis threat_level — available for every article
-      threat_label = seg[:targetThreatLevel] || seg[:sourceThreatLevel]
-      case threat_label
-      when "CRITICAL"   then signals << 9.0
-      when "HIGH"       then signals << 7.0
-      when "MODERATE"   then signals << 5.0
-      when "LOW"        then signals << 2.5
-      when "NEGLIGIBLE" then signals << 1.0
+      # --- Channel 1: Threat Context (0–10) ---
+      # Average of source and target threat levels. Uses average (not max) because
+      # the arc represents a pair — a CRITICAL→LOW arc is less alarming than CRITICAL→CRITICAL.
+      source_threat = THREAT_LEVEL_SCORES[seg[:sourceThreatLevel].to_s] || 0.0
+      target_threat = THREAT_LEVEL_SCORES[seg[:targetThreatLevel].to_s] || 0.0
+      threat_context = if source_threat > 0 && target_threat > 0
+        (source_threat + target_threat) / 2.0
+      else
+        # Only one side has data — use it directly (better than averaging with 0)
+        [ source_threat, target_threat ].max
       end
 
-      # Signal 2: GDELT Goldstein scale (0–10 absolute)
-      signals << event&.goldstein_scale&.abs if event&.goldstein_scale
+      # --- Channel 2: Drift Signal (0–10) ---
+      # How much the narrative transformed. This IS the arc's core meaning.
+      # compute_drift_intensity already combines framing (50%), sentiment (30%),
+      # and semantic distance (20%) into a 0–1 score. Scale to 0–10.
+      drift_signal = (seg[:driftIntensity].to_f * 10.0).clamp(0.0, 10.0)
 
-      # Signal 3: GDELT QuadClass conflict indicator
-      if event&.quad_class
-        signals << 8.5 if event.quad_class == 4  # Material Conflict
-        signals << 6.5 if event.quad_class == 3  # Verbal Conflict
+      # --- Channel 3: GDELT Bonus (0–10) ---
+      # Real-world conflict confirmation. Optional — when absent, it contributes 0
+      # and its weight redistributes naturally (the arc just has less confidence).
+      gdelt_bonus = 0.0
+      if event
+        # Goldstein scale: -10 (destabilizing) to +10 (stabilizing).
+        # We care about destabilizing events — use negative values as positive threat.
+        goldstein_threat = event.goldstein_scale ? (-event.goldstein_scale).clamp(0.0, 10.0) : 0.0
+        # QuadClass bump: material conflict = strong confirmation, verbal = moderate
+        quad_bump = case event.quad_class
+                    when 4 then 3.0  # Material Conflict: strong real-world action
+                    when 3 then 1.5  # Verbal Conflict: rhetoric, not action
+                    else 0.0
+                    end
+        gdelt_bonus = (goldstein_threat + quad_bump).clamp(0.0, 10.0)
       end
 
-      # Signal 4: Drift framing shift
-      case seg[:framingShift]
-      when "distorted"  then signals << 7.0
-      when "amplified"  then signals << 5.0
-      when "neutralized" then signals << 3.0
+      # --- Weighted composition ---
+      raw_score = (SCORE_WEIGHT_THREAT * threat_context) +
+                  (SCORE_WEIGHT_DRIFT  * drift_signal) +
+                  (SCORE_WEIGHT_GDELT  * gdelt_bonus)
+
+      # Sigmoid-like smoothing: prevents extreme spikes while preserving spread.
+      # Without smoothing, a CRITICAL (10) + distorted (10) + GDELT conflict (10) = 10.0
+      # which is correct. But a CRITICAL (10) + original (0) + no GDELT (0) = 4.5 which
+      # might feel low. The floor ensures even high-threat topics get a visible color.
+      # Floor: if EITHER article is CRITICAL/HIGH, enforce a minimum score of 4.0
+      # This prevents a CRITICAL article from being invisible just because drift is low.
+      floor = if threat_context >= 7.5
+        4.0  # At least MODERATE visibility for high-threat topics
+      elsif threat_context >= 5.0
+        2.5  # Visible but not alarming for moderate topics
+      else
+        0.0
       end
 
-      # Signal 5: Drift intensity (0–1 → 0–10)
-      signals << (seg[:driftIntensity].to_f * 10) if seg[:driftIntensity]
-
-      seg[:veritasThreatScore] = signals.any? ? [ signals.max.round(1), 10.0 ].min : 0.0
+      seg[:veritasThreatScore] = [ raw_score, floor, 0.0 ].max.clamp(0.0, 10.0).round(1)
     end
   end
 
@@ -204,7 +251,10 @@ class NarrativeRoute < ApplicationRecord
       classifier = SourceClassifierService.classify(source_name.to_s)
       raw_sentiment = article&.ai_analysis&.sentiment_label.to_s
       confidence = normalize_confidence(raw_hop["confidence_score"])
-      country_name = raw_hop["source_country"].presence || article&.country&.name || fallback_country_name(index)
+      country_name = raw_hop["source_country"].presence ||
+                     article&.country&.name ||
+                     country_from_source_url(article&.source_url) ||
+                     fallback_country_name(index)
 
       {
         index: index,
@@ -429,6 +479,17 @@ class NarrativeRoute < ApplicationRecord
 
   def origin_article
     @origin_article ||= narrative_arc&.article
+  end
+
+  # TLD-based country inference for source URLs without country data.
+  # Reuses the same mapping as NarrativeRouteGeneratorService::DOMAIN_COUNTRY_MAP.
+  def country_from_source_url(url)
+    return nil if url.blank?
+    host = URI.parse(url.strip).host.to_s.downcase
+    tld = host.split(".").last
+    NarrativeRouteGeneratorService::DOMAIN_COUNTRY_MAP[tld]
+  rescue URI::InvalidURIError
+    nil
   end
 
   def fallback_country_name(index)
