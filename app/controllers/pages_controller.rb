@@ -1,5 +1,4 @@
 class PagesController < ApplicationController
-  DEFAULT_ARC_COLOR = "#00f0ff".freeze
   skip_before_action :authenticate_user!, only: [:welcome, :home, :globe_data, :search, :aware, :aware_narration, :narrative_dna, :tribunal, :article_preview, :entity_nexus, :entity_nexus_detail, :article_network]
 
   def welcome
@@ -236,22 +235,11 @@ class PagesController < ApplicationController
       }
     end
 
+    # Phase 2: arcs are now exclusively served by ArticleNetworkService
+    # via /api/article_network/global and /api/article_network/search.
+    # globe_data only provides points, heatmap, regions, and clusters.
+    arcs = []
     routes = []
-    arcs = if view_mode == "segments"
-             route_payload = build_route_segments(filtered_articles, nil, to_time)
-             routes = route_payload[:routes]
-             # If default view (no search/topic) returns few segments, inject top narratives
-             if route_payload[:segments].size < 5 && search_query.blank? && topic.blank?
-               top_payload = build_top_narrative_segments(to_time)
-               routes = (routes + top_payload[:routes]).uniq { |r| r[:id] }
-               all_segments = (route_payload[:segments] + top_payload[:segments]).uniq { |s| s[:id] }
-               all_segments.any? ? all_segments : build_globe_arcs(filtered_articles, nil, to_time)
-             else
-               route_payload[:segments].any? ? route_payload[:segments] : build_globe_arcs(filtered_articles, nil, to_time)
-             end
-           else
-             build_globe_arcs(filtered_articles, nil, to_time)
-           end
 
     # Dynamic regions: countries that actually have articles
     # Use country coordinates (hardcoded for top countries)
@@ -458,6 +446,10 @@ class PagesController < ApplicationController
   def article_network
     if params[:article_id] == "global"
       # Global View: top threat articles + connections between them
+      # Phase 2: expanded to 80 input articles (sole arc source now),
+      # output capped at 30 arcs sorted by combined_strength.
+      global_time_window = (params[:time_window] || 72).to_i.hours
+
       top_articles = Article
         .includes(:country, :ai_analysis, :entities)
         .joins(:ai_analysis)
@@ -469,10 +461,15 @@ class PagesController < ApplicationController
             WHEN 'CRITICAL' THEN 5 WHEN 'HIGH' THEN 4 WHEN 'MODERATE' THEN 3 ELSE 1
           END DESC, articles.published_at DESC
         SQL
-        .limit(25)
+        .limit(80)
         .to_a
 
-      data = ArticleNetworkService.new.connections_between(top_articles, time_window: 72.hours)
+      data = ArticleNetworkService.new.connections_between(top_articles, time_window: global_time_window)
+
+      # Cap rendered arcs at 30 (already sorted by strength from service)
+      data[:arcs] = data[:arcs].first(30) if data[:arcs]
+      data[:meta][:rendered_connections] = data[:arcs]&.size || 0
+
       return render json: data
     end
 
@@ -637,235 +634,6 @@ class PagesController < ApplicationController
     scope.order(published_at: :desc).limit(50).to_a
   end
 
-  def build_route_segments(filtered_articles, perspective, to_time)
-    filtered_ids = filtered_articles.map(&:id)
-
-    # Resolve arc IDs first — avoids JOIN ambiguity from combines includes+joins
-    arc_ids = NarrativeArc.where(article_id: filtered_ids).pluck(:id)
-
-    # Fetch narrative routes restricted to the filtered arc set
-    scope = NarrativeRoute
-      .where(narrative_arc_id: arc_ids)
-      .joins(narrative_arc: :article)
-      .includes(narrative_arc: { article: :ai_analysis })
-      .where.not(hops: nil)
-      .order("narrative_routes.created_at DESC")
-
-    # Filter by timestamp if provided
-    if to_time
-      scope = scope.where("articles.published_at <= ?", to_time)
-    end
-
-    # Filter by perspective if provided
-    if perspective
-      scope = scope.select do |route|
-        perspective.matches_source?(route.narrative_arc.article.source_name)
-      end
-    else
-      scope = scope.limit(100)
-    end
-
-    # Score each route by avg hop confidence (our best proxy for semantic strength),
-    # rank them, and assign visual tiers: top 5 = primary, next 10 = secondary, rest dropped.
-    # This eliminates spaghetti: max 15 routes × max 8 hops = 120 segments absolute ceiling.
-    scored_routes = scope.filter_map do |route|
-      route_data = route.as_globe_data
-      next unless route_data[:segments] && route_data[:segments].any?
-
-      confidences = route.hops.filter_map { |h| h['confidence_score']&.to_f }
-      strength    = confidences.any? ? (confidences.sum / confidences.size.to_f) : 0.5
-
-      { route_data: route_data, strength: strength, route: route,
-        article: route.narrative_arc.article }
-    end
-
-    scored_routes.sort_by! { |r| -r[:strength] }
-
-    segments = []
-    routes = []
-
-    scored_routes.first(15).each_with_index do |r, index|
-      tier     = index < 5 ? 1 : 2
-      strength = r[:strength].round(3)
-      route    = r[:route]
-      route_data = route.as_journey_data
-
-      routes << route_data.merge(
-        strength: strength,
-        tier: tier
-      )
-
-      route_data[:segments].each do |segment|
-        next if degenerate_arc?(segment)
-        segments << segment.merge(
-          strength: strength,
-          tier: tier
-        )
-      end
-    end
-
-    { segments: segments, routes: routes }
-  end
-
-  # Top narrative routes by manipulation score — used to populate the default homepage view
-  # so users see the most interesting intelligence immediately rather than an empty globe.
-  def build_top_narrative_segments(to_time)
-    scope = NarrativeRoute
-      .joins(narrative_arc: :article)
-      .includes(narrative_arc: { article: :ai_analysis })
-      .where.not(hops: nil)
-      .where("narrative_routes.total_hops >= ?", 2)
-      .where("narrative_routes.created_at >= ?", 7.days.ago)
-      .order(manipulation_score: :desc, total_reach_countries: :desc)
-
-    scope = scope.where("articles.published_at <= ?", to_time) if to_time
-
-    segments = []
-    routes = []
-
-    scope.limit(25).each_with_index do |route, index|
-      route_data = route.as_journey_data
-      next unless route_data[:segments]&.any?
-
-      tier = index < 5 ? 1 : 2
-      confidences = route.hops.filter_map { |h| h["confidence_score"]&.to_f }
-      strength = confidences.any? ? (confidences.sum / confidences.size.to_f).round(3) : 0.5
-
-      routes << route_data.merge(strength: strength, tier: tier)
-
-      route_data[:segments].each do |segment|
-        next if degenerate_arc?(segment)
-        segments << segment.merge(strength: strength, tier: tier)
-      end
-    end
-
-    { segments: segments, routes: routes }
-  end
-
-  def build_globe_arcs(filtered_articles, perspective, to_time)
-    filtered_ids = filtered_articles.map(&:id)
-
-    # 1. Flow arcs (auto-generated from article sequence)
-    # DISABLED: These create confusion with real narrative paths.
-    # flow_arcs = build_article_flow_arcs(filtered_articles, perspective)
-
-    # 2. Database arcs (seeded NarrativeArcs) — restricted to filtered article set
-    scope = NarrativeArc.includes(article: :ai_analysis).order(:id)
-    scope = scope.where(article_id: filtered_ids) if filtered_ids.any?
-    scope = scope.joins(:article).where("articles.published_at <= ?", to_time) if to_time
-
-    db_arcs = if perspective
-                scope.joins(:article).select { |arc| perspective.matches_source?(arc.article.source_name) }
-                     .map { |arc| serialize_arc(arc, perspective.color).merge(isNarrative: true) }
-              else
-                scope.limit(50).map { |arc| serialize_arc(arc).merge(isNarrative: true) }
-              end
-
-    # Return only real narrative arcs to keep the intelligence layer focused.
-    # Filter degenerate arcs (same start/end point = hedgehog needles)
-    db_arcs.reject { |arc| degenerate_arc?(arc) }.first(100)
-  end
-
-  def build_article_flow_arcs(filtered_articles, perspective)
-    # This method is now unused by default to avoid visual 'clutter'
-    # that users misinterpret as broken narrative links.
-    candidates = filtered_articles
-      .select { |article| article.country.present? && article.latitude.present? && article.longitude.present? }
-      .sort_by { |article| article.published_at || Time.at(0) }
-      .last(80)
-
-    candidates.each_cons(2).filter_map do |origin, target|
-      next if origin.country_id == target.country_id
-
-      {
-        startLat:      origin.latitude,
-        startLng:      origin.longitude,
-        endLat:        target.latitude,
-        endLng:        target.longitude,
-        color:         [arc_start_color_for(origin, perspective), arc_end_color_for(origin, target, perspective)],
-        articleId:     origin.id,
-        headline:      origin.headline,
-        source:        origin.source_name,
-        originCountry: origin.country.name,
-        targetCountry: target.country.name
-      }
-    end.first(50)
-  end
-
-  def serialize_arc(arc, fallback_color = nil)
-    base_color = fallback_color || arc.article&.ai_analysis&.sentiment_color || arc.arc_color || DEFAULT_ARC_COLOR
-
-    {
-      startLat:        arc.origin_lat,
-      startLng:        arc.origin_lng,
-      endLat:          arc.target_lat,
-      endLng:          arc.target_lng,
-      color:           [base_color, brighten_hex(base_color, 0.18)],
-      articleId:       arc.article_id,
-      headline:        arc.article&.headline,
-      source:          arc.article&.source_name,
-      perspectiveSlug: SourceClassifierService.classify(arc.article&.source_name.to_s)[:slug],
-      originCountry:   arc.origin_country,
-      targetCountry:   arc.target_country
-    }
-  end
-
-  def arc_start_color_for(article, perspective)
-    semantic_color_for(article) || perspective&.color || threat_color_for(article.region&.threat_level) || DEFAULT_ARC_COLOR
-  end
-
-  def arc_end_color_for(origin_article, target_article, perspective)
-    end_color = semantic_color_for(target_article) ||
-                semantic_color_for(origin_article) ||
-                perspective&.color ||
-                threat_color_for(target_article.region&.threat_level) ||
-                threat_color_for(origin_article.region&.threat_level) ||
-                DEFAULT_ARC_COLOR
-
-    brighten_hex(end_color, 0.18)
-  end
-
-  def semantic_color_for(article)
-    analysis = article.ai_analysis
-    return analysis.sentiment_color if analysis&.sentiment_color.present?
-
-    threat_color_for(analysis&.threat_level || article.region&.threat_level)
-  end
-
-  def threat_color_for(threat)
-    case threat.to_s.upcase
-    when "3", "CRITICAL" then "#ef4444"
-    when "2", "HIGH", "MODERATE" then "#f59e0b"
-    when "1", "LOW" then "#22c55e"
-    when "0", "NEGLIGIBLE" then "#38bdf8"
-    else
-      nil
-    end
-  end
-
-  # Returns true for arcs where start ≈ end (hedgehog needles / spikes).
-  def degenerate_arc?(arc)
-    s_lat = arc[:startLat]
-    s_lng = arc[:startLng]
-    e_lat = arc[:endLat]
-    e_lng = arc[:endLng]
-
-    # Any nil coordinate = degenerate
-    return true if [s_lat, s_lng, e_lat, e_lng].any?(&:nil?)
-
-    # Out-of-range coordinates (GDELT parsing bug) = degenerate
-    return true unless valid_coordinates?(s_lat, s_lng) && valid_coordinates?(e_lat, e_lng)
-
-    return true if null_island?(s_lat, s_lng) || null_island?(e_lat, e_lng)
-
-    # Too close (within 2°) = spike/needle regardless of country
-    lat_diff = (s_lat.to_f - e_lat.to_f).abs
-    lng_diff = (s_lng.to_f - e_lng.to_f).abs
-    return true if lat_diff < 2.0 && lng_diff < 2.0
-
-    false
-  end
-
   def null_island?(lat, lng)
     lat.to_f.abs < 1.0 && lng.to_f.abs < 1.0
   end
@@ -874,15 +642,4 @@ class PagesController < ApplicationController
     lat.to_f.between?(-90.0, 90.0) && lng.to_f.between?(-180.0, 180.0)
   end
 
-  def brighten_hex(hex_color, factor)
-    hex = hex_color.to_s.delete_prefix("#")
-    return DEFAULT_ARC_COLOR unless hex.match?(/\A[\da-fA-F]{6}\z/)
-
-    channels = hex.scan(/../).map { |pair| pair.to_i(16) }
-    brightened = channels.map do |channel|
-      (channel + ((255 - channel) * factor)).round.clamp(0, 255)
-    end
-
-    "##{brightened.map { |value| value.to_s(16).rjust(2, "0") }.join}"
-  end
 end

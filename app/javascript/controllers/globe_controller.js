@@ -274,32 +274,7 @@ export default class extends Controller {
         }
         return d.tier === 1 ? 2500 : 0
       })
-      .arcStroke(d => {
-        // Highlight selected arc with thicker stroke
-        if (this._selectedArcArticleId && String(d.articleId) === String(this._selectedArcArticleId)) {
-          return 2.5
-        }
-        // Network arcs: stroke by dominant connection type
-        if (d.connectionTypes) {
-          const dom = this._dominantConnectionType(d)
-          const base = d.thickness || 0.5
-          if (dom === 'narrative_route') return Math.max(base, 1.0)  // thick — strongest signal
-          if (dom === 'gdelt_event') return Math.max(base, 0.7)     // solid and visible
-          if (dom === 'embedding_similarity') return Math.min(base, 0.5)  // thinner — algorithmic
-          if (dom === 'shared_entities') return Math.min(base, 0.3)  // very thin — weakest hint
-          return base
-        }
-        if (d.arcStroke != null) return d.arcStroke
-        // Visibility-weighted thickness: high confidence + high threat = thicker
-        if (d.visibilityWeight != null) {
-          const vis = d.visibilityWeight || 0.3
-          const base = d.tier === 1 ? 1.0 : (d.tier === 2 ? 0.4 : 0.3)
-          return base + (vis * 1.0)  // 0.3–1.3 range on top of base
-        }
-        if (d.tier === 1) return 1.2
-        if (d.tier === 2) return 0.5
-        return d.thickness ? Math.min(d.thickness, 1.0) : 0.4
-      })
+      .arcStroke(d => this._arcStrokeDefault(d))
       .onArcHover(arc => this._onArcHover(arc))
       .onArcClick(arc => this._onArcClicked(arc))
       // Tooltips
@@ -529,6 +504,25 @@ export default class extends Controller {
       if (err.name === 'AbortError') return  // stale request superseded by newer one
       console.error("[VERITAS Globe] Failed to load globe data:", err)
     }
+  }
+
+  // Build pulsing warning rings at midpoints of GDELT arcs with high Goldstein delta.
+  // goldsteinDelta > 5.0 = warning pulse, > 8.0 = intense/faster pulse.
+  _buildGoldsteinDeltaRings(arcs) {
+    if (!arcs) return []
+    return arcs.filter(a =>
+      a.goldsteinDelta != null && a.goldsteinDelta > 5.0
+    ).map(a => {
+      const intense = a.goldsteinDelta > 8.0
+      return {
+        lat: (a.startLat + a.endLat) / 2,
+        lng: (a.startLng + a.endLng) / 2,
+        maxR: intense ? 3.5 : 2.0,
+        propagationSpeed: intense ? 5.0 : 3.0,
+        repeatPeriod: intense ? 1200 : 2000,
+        color: () => intense ? 'rgba(255,45,45,0.8)' : 'rgba(255,140,0,0.6)'
+      }
+    })
   }
 
   _updatePackets() {
@@ -1330,19 +1324,11 @@ export default class extends Controller {
     const signal = this._abortController.signal
 
     try {
-      // 1. Fetch legacy globe_data (points + heatmap + legacy arcs)
-      const params = new URLSearchParams({
-        search_query: query,
-        view: 'segments'
-      })
-
-      if (this._currentTopic) {
-        params.set("topic", this._currentTopic)
-      }
-
+      // Phase 2: globe_data for points/heatmap ONLY, article_network for ALL arcs
+      const params = new URLSearchParams({ search_query: query })
+      if (this._currentTopic) params.set("topic", this._currentTopic)
       const globeUrl = `${this.dataUrlValue}?${params.toString()}`
 
-      // 2. Fetch network arcs from ArticleNetworkService (4-type connections)
       const networkUrl = `/api/article_network/search?search_query=${encodeURIComponent(query)}`
 
       // Parallel fetch — both requests at once
@@ -1357,19 +1343,16 @@ export default class extends Controller {
         networkData = await networkResponse.json()
       }
 
-      // Store heatmap base data + clusters
+      // Store heatmap base data + clusters from globe_data
       this._heatmapBaseData = data.heatmap || []
       this._heatmapClusters = data.heatmapClusters || []
 
-      // Store points from globe_data
+      // Points from globe_data
       this._allPoints = (data.points || []).filter(p => this._isValidPoint(p))
 
-      // Merge arcs: network arcs (primary, 4-type) + legacy arcs (secondary, fallback)
-      const legacyArcs = (data.arcs || []).filter(a => this._isValidArc(a))
+      // Arcs exclusively from ArticleNetworkService — single source of truth
       const networkArcs = (networkData?.arcs || []).filter(a => this._isValidArc(a))
-      this._allArcs = networkArcs.length > 0
-        ? this._mergeArcSets(networkArcs, legacyArcs)
-        : legacyArcs
+      this._allArcs = networkArcs
 
       if (this._heatmapActive) {
         this._globe.heatmapsData([this._heatmapBaseData])
@@ -1385,24 +1368,25 @@ export default class extends Controller {
           visiblePoints = this._allPoints.filter(p => connectedIds.has(p.id))
         }
 
+        const deltaRings = this._buildGoldsteinDeltaRings(this._allArcs)
         this._globe
           .hexBinPointsData(visiblePoints)
           .arcsData(this._allArcs)
-          .ringsData([])
+          .ringsData(deltaRings)
 
         if (this._packetGroup) this._packetGroup.visible = true
         if (this._globe) this._updatePackets()
       }
 
       // Fly to the centroid of the first arc
-      const primaryArc = this._allArcs.find(a => a.connectionTypes) || this._allArcs.find(a => a.tier === 1) || this._allArcs[0]
+      const primaryArc = this._allArcs[0]
       if (primaryArc) {
         const midLat = (primaryArc.startLat + primaryArc.endLat) / 2
         const midLng = (primaryArc.startLng + primaryArc.endLng) / 2
         this._flyTo(midLat, midLng, 2.0)
       }
 
-      console.log(`[VERITAS Globe] Search: "${query}" — ${networkArcs.length} network + ${legacyArcs.length} legacy = ${this._allArcs.length} arcs`)
+      console.log(`[VERITAS Globe] Search: "${query}" — ${networkArcs.length} arcs (single source)`)
     } catch (err) {
       if (err.name === 'AbortError') return
       console.error('[VERITAS Globe] Search filter failed:', err)
@@ -1473,34 +1457,30 @@ export default class extends Controller {
     const signal = this._abortController.signal
 
     try {
-      // Fetch global network (top threat articles + connections)
+      // Phase 2: globe_data for points/heatmap ONLY, article_network for ALL arcs
       const networkUrl = `/api/article_network/global`
-      const response = await fetch(networkUrl, { signal })
-      const networkData = await response.json()
-
-      // Also fetch the standard globe data for points/heatmap
-      const params = new URLSearchParams({ view: "segments" })
+      const params = new URLSearchParams()
       if (this._currentTopic) params.set("topic", this._currentTopic)
       if (this._currentTimestamp) params.set("to", this._currentTimestamp)
       const globeUrl = `${this.dataUrlValue}?${params.toString()}`
-      const globeResponse = await fetch(globeUrl, { signal })
+
+      const [networkResponse, globeResponse] = await Promise.all([
+        fetch(networkUrl, { signal }),
+        fetch(globeUrl, { signal })
+      ])
+
+      const networkData = await networkResponse.json()
       const globeData = await globeResponse.json()
 
-      // Store heatmap data from standard response
+      // Points, heatmap, clusters from globe_data
       this._heatmapBaseData = globeData.heatmap || []
       this._heatmapClusters = globeData.heatmapClusters || []
       this._allPoints = (globeData.points || []).filter(p => this._isValidPoint(p))
 
-      // Merge: use standard points + network arcs (overlaid on existing segment arcs)
-      const existingArcs = (globeData.arcs || []).filter(a => this._isValidArc(a))
+      // Arcs exclusively from ArticleNetworkService — single source of truth
       const networkArcs = (networkData.arcs || []).filter(a => this._isValidArc(a))
-
-      // Combine — network arcs first (higher priority), then existing segments
-      // Deduplicate by start/end proximity
-      const combinedArcs = this._mergeArcSets(networkArcs, existingArcs)
-
-      this._allArcs = combinedArcs
-      this._allRoutes = globeData.routes || []
+      this._allArcs = networkArcs
+      this._allRoutes = []
 
       if (this._heatmapActive) {
         this._globe.heatmapsData([this._heatmapBaseData])
@@ -1508,7 +1488,7 @@ export default class extends Controller {
         let visiblePoints = this._allPoints
         if (this._hideIsolated) {
           const connectedIds = new Set()
-          combinedArcs.forEach(arc => {
+          networkArcs.forEach(arc => {
             if (arc.articleId) connectedIds.add(arc.articleId)
             if (arc.sourceArticleId) connectedIds.add(arc.sourceArticleId)
             if (arc.targetArticleId) connectedIds.add(arc.targetArticleId)
@@ -1516,10 +1496,11 @@ export default class extends Controller {
           visiblePoints = this._allPoints.filter(p => connectedIds.has(p.id))
         }
 
+        const deltaRings = this._buildGoldsteinDeltaRings(networkArcs)
         this._globe
           .hexBinPointsData(visiblePoints)
-          .arcsData(combinedArcs)
-          .ringsData([])
+          .arcsData(networkArcs)
+          .ringsData(deltaRings)
 
         if (this._packetGroup) this._packetGroup.visible = true
         this._updatePackets()
@@ -1527,11 +1508,10 @@ export default class extends Controller {
 
       this._showBackToGlobalButton(false)
 
-      console.log(`[VERITAS Globe] Global Network View — ${networkArcs.length} network arcs + ${existingArcs.length} segment arcs`)
+      console.log(`[VERITAS Globe] Global Network View — ${networkArcs.length} arcs (single source)`)
     } catch (err) {
       if (err.name === 'AbortError') return
       console.error('[VERITAS Globe] Global network view failed, falling back:', err)
-      // Fallback to original data load
       this._fetchAndRender()
     }
   }
@@ -1587,8 +1567,9 @@ export default class extends Controller {
       this._flyTo(center.lat, center.lng, 2.2)
     }
 
-    // Rings on the center article
+    // Rings: center article ring + Goldstein delta warning pulses
     const rings = center ? [{ lat: center.lat, lng: center.lng, maxR: 3, propagationSpeed: 2, repeatPeriod: 1500 }] : []
+    const deltaRings = this._buildGoldsteinDeltaRings(renderArcs)
 
     this._allPoints = points
     this._allArcs = renderArcs
@@ -1596,35 +1577,12 @@ export default class extends Controller {
     this._globe
       .hexBinPointsData(points)
       .arcsData(renderArcs)
-      .ringsData(rings)
+      .ringsData([...rings, ...deltaRings])
 
     if (this._packetGroup) this._packetGroup.visible = true
     this._updatePackets()
   }
 
-  // -------------------------------------------------------
-  // Arc Set Merger (deduplicates by geo proximity)
-  // -------------------------------------------------------
-
-  _mergeArcSets(primary, secondary) {
-    const merged = [...primary]
-    const existing = new Set()
-
-    primary.forEach(arc => {
-      existing.add(`${Math.round(arc.startLat * 10)},${Math.round(arc.startLng * 10)}-${Math.round(arc.endLat * 10)},${Math.round(arc.endLng * 10)}`)
-    })
-
-    secondary.forEach(arc => {
-      const key = `${Math.round(arc.startLat * 10)},${Math.round(arc.startLng * 10)}-${Math.round(arc.endLat * 10)},${Math.round(arc.endLng * 10)}`
-      const keyReverse = `${Math.round(arc.endLat * 10)},${Math.round(arc.endLng * 10)}-${Math.round(arc.startLat * 10)},${Math.round(arc.startLng * 10)}`
-      if (!existing.has(key) && !existing.has(keyReverse)) {
-        merged.push(arc)
-        existing.add(key)
-      }
-    })
-
-    return merged
-  }
 
   // -------------------------------------------------------
   // Back to Global UI
@@ -2103,6 +2061,7 @@ export default class extends Controller {
     const score = d.veritasThreatScore || 0
     const strength = d.strength || 0
     const types = (d.connectionTypes || []).map(t => this._connectionTypeBadge(t)).join(' ')
+    const dom = d.dominantType || this._dominantConnectionType(d)
 
     const driftLevelColor = score >= 7 ? '#ff2d2d' : score >= 5 ? '#ff8c00' : score >= 3 ? '#ffd700' : '#6088a0'
     const driftLevel = score >= 7 ? 'CRITICAL' : score >= 5 ? 'HIGH' : score >= 3 ? 'MODERATE' : 'LOW'
@@ -2110,7 +2069,7 @@ export default class extends Controller {
     const sourceName = d.sourceName || d.sourceCountry || 'Source'
     const targetName = d.targetSourceName || d.targetCountry || 'Target'
 
-    // Build optional sections — only render what exists
+    // Headlines
     let headlines = ''
     if (d.sourceHeadline || d.targetHeadline) {
       headlines = `<div style="font-size:10px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.06);">`
@@ -2119,40 +2078,65 @@ export default class extends Controller {
       headlines += `</div>`
     }
 
-    let analysisGrid = ''
-    const cells = []
-    if (d.framing) cells.push({ label: 'Framing', value: d.framing.toUpperCase(), color: this._getFramingColor(d.framing) })
-    if (d.sentimentShift) cells.push({ label: 'Sentiment', value: d.sentimentShift, color: '#e0e0e0' })
-    if (d.semanticSimilarity) cells.push({ label: 'Semantic Match', value: `${d.semanticSimilarity}%`, color: d.semanticSimilarity > 85 ? '#00ffcc' : '#ffd700' })
-    if (d.depth) cells.push({ label: 'Depth', value: `${d.depth}`, color: '#8090a0' })
-
-    if (cells.length > 0) {
-      analysisGrid = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">`
-      cells.forEach(c => {
-        analysisGrid += `<div><div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">${c.label}</div><div style="font-size:11px;color:${c.color};font-weight:600;">${c.value}</div></div>`
-      })
-      analysisGrid += `</div>`
-    }
-
-    let gdeltSection = ''
-    if (d.actorSummary || d.eventDescription) {
-      gdeltSection = `
-        <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,45,45,0.2);">
-          <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#ff6060;margin-bottom:5px;">CONFLICT INTELLIGENCE</div>
-          ${d.actorSummary ? `<div style="font-size:10px;color:#ff9090;font-weight:600;margin-bottom:3px;">${d.actorSummary}</div>` : ''}
-          ${d.eventDescription ? `<div style="font-size:10px;color:#c08080;">${d.eventDescription}</div>` : ''}
-          ${d.goldsteinScale != null ? `<div style="font-size:9px;color:${d.goldsteinScale < -7 ? '#ff2d2d' : '#ff8060'};margin-top:3px;">Goldstein: ${d.goldsteinScale.toFixed(1)}</div>` : ''}
+    // Dominant type detail section — adapts to connection type
+    let dominantDetail = ''
+    if (dom === 'narrative_route') {
+      const cells = []
+      if (d.framing) cells.push(`<div><div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Framing Shift</div><div style="font-size:11px;color:${this._getFramingColor(d.framing)};font-weight:600;">${d.framing}</div></div>`)
+      if (d.framingExplanation) cells.push(`<div style="grid-column:1/-1;"><div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Analysis</div><div style="font-size:10px;color:#c0b0d0;">${d.framingExplanation}</div></div>`)
+      if (d.confidenceScore) cells.push(`<div><div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Confidence</div><div style="font-size:11px;color:#a855f7;font-weight:600;">${Math.round(d.confidenceScore * 100)}%</div></div>`)
+      if (d.sentimentShift) cells.push(`<div><div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Sentiment</div><div style="font-size:11px;color:#e0e0e0;font-weight:600;">${d.sentimentShift}</div></div>`)
+      if (cells.length > 0) {
+        dominantDetail = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">${cells.join('')}</div>`
+      }
+    } else if (dom === 'gdelt_event') {
+      let parts = []
+      if (d.sharedActors) parts.push(`<div style="font-size:10px;color:#ff9090;font-weight:600;margin-bottom:3px;">${d.sharedActors}</div>`)
+      if (d.eventRootCode) parts.push(`<div style="font-size:9px;color:#c08080;margin-bottom:3px;">CAMEO Code: ${d.eventRootCode}</div>`)
+      if (d.goldsteinDelta != null) {
+        const deltaColor = d.goldsteinDelta > 8 ? '#ff2d2d' : d.goldsteinDelta > 5 ? '#ff8c00' : '#ff8060'
+        const deltaLabel = d.goldsteinDelta > 8 ? 'extreme narrative divergence' : d.goldsteinDelta > 5 ? 'high narrative divergence' : 'moderate divergence'
+        parts.push(`<div style="font-size:10px;color:${deltaColor};font-weight:600;">Goldstein \u0394: ${d.goldsteinDelta.toFixed(1)} \u2014 ${deltaLabel}</div>`)
+      } else if (d.goldsteinScale != null) {
+        parts.push(`<div style="font-size:9px;color:${d.goldsteinScale < -7 ? '#ff2d2d' : '#ff8060'};">Goldstein: ${d.goldsteinScale.toFixed(1)}</div>`)
+      }
+      if (d.actorSummary) parts.push(`<div style="font-size:10px;color:#c08080;margin-top:3px;">${d.actorSummary}</div>`)
+      if (parts.length > 0) {
+        dominantDetail = `
+          <div style="margin-bottom:10px;padding:8px;border-radius:4px;background:rgba(255,45,45,0.06);border:1px solid rgba(255,45,45,0.15);">
+            <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#ff6060;margin-bottom:5px;">CONFLICT INTELLIGENCE</div>
+            ${parts.join('')}
+          </div>`
+      }
+    } else if (dom === 'embedding_similarity') {
+      const sim = d.cosineSimilarity || d.semanticSimilarity || 0
+      const simColor = sim > 85 ? '#00ffcc' : sim > 70 ? '#ffd700' : '#6088a0'
+      dominantDetail = `
+        <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;">
+          <div>
+            <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Semantic Match</div>
+            <div style="font-size:18px;color:${simColor};font-weight:700;">${sim}%</div>
+          </div>
+          <div style="flex:1;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
+            <div style="width:${sim}%;height:100%;background:linear-gradient(90deg,#3b82f6,${simColor});border-radius:3px;"></div>
+          </div>
         </div>`
+    } else if (dom === 'shared_entities') {
+      if (d.sharedEntities && d.sharedEntities.length > 0) {
+        const tags = d.sharedEntities.map(e => `<span style="display:inline-block;font-size:9px;padding:2px 6px;margin:2px;border-radius:3px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.25);color:#22c55e;">${e}</span>`).join('')
+        dominantDetail = `
+          <div style="margin-bottom:10px;">
+            <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#00c0a0;margin-bottom:5px;">SHARED ENTITIES (${d.sharedEntityCount || d.sharedEntities.length})</div>
+            <div style="display:flex;flex-wrap:wrap;gap:2px;">${tags}</div>
+          </div>`
+      }
     }
 
-    let entitySection = ''
-    if (d.sharedEntities && d.sharedEntities.length > 0) {
-      entitySection = `
-        <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,255,204,0.1);">
-          <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#00c0a0;margin-bottom:4px;">SHARED ENTITIES (${d.sharedEntityCount || d.sharedEntities.length})</div>
-          <div style="font-size:10px;color:#80c0b0;">${d.sharedEntities.join(', ')}</div>
-        </div>`
-    }
+    // "Also connected via" line for multi-type arcs
+    const otherTypes = (d.connectionTypes || []).filter(t => t !== dom)
+    const alsoVia = otherTypes.length > 0
+      ? `<div style="font-size:8px;color:#506070;margin-top:6px;">Also connected via: ${otherTypes.map(t => this._connectionTypeLabel(t)).join(', ')}</div>`
+      : ''
 
     return `
       <div style="
@@ -2174,7 +2158,7 @@ export default class extends Controller {
           <span style="color:#c0d0e0;">${targetName}</span>
         </div>
         ${headlines}
-        ${analysisGrid}
+        ${dominantDetail}
         <div style="margin-top:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
             <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:#506070;">Threat ${score.toFixed(1)}/10 &middot; ${driftLevel}</div>
@@ -2184,8 +2168,7 @@ export default class extends Controller {
             <div style="width:${Math.round(score * 10)}%;height:100%;background:linear-gradient(90deg,#6088a0,${driftLevelColor});border-radius:2px;"></div>
           </div>
         </div>
-        ${gdeltSection}
-        ${entitySection}
+        ${alsoVia}
       </div>`
   }
 
@@ -2198,6 +2181,16 @@ export default class extends Controller {
     }
     const b = badges[type] || { label: type.toUpperCase(), color: '#6b7280' }
     return `<span style="font-size:7px;padding:2px 5px;border-radius:3px;background:${b.color}20;color:${b.color};border:1px solid ${b.color}40;letter-spacing:0.5px;">${b.label}</span>`
+  }
+
+  _connectionTypeLabel(type) {
+    const labels = {
+      narrative_route: 'Narrative Route',
+      gdelt_event: 'GDELT Event',
+      embedding_similarity: 'Semantic Similarity',
+      shared_entities: 'Shared Entities'
+    }
+    return labels[type] || type
   }
 
   // Returns the dominant (highest-weight) connection type for visual styling.
@@ -2568,20 +2561,17 @@ export default class extends Controller {
       })
   }
 
-  // Store default arc stroke logic so we can restore it
+  // Arc stroke: combined_strength → [1.0, 4.5] for network arcs.
+  // Three visual dimensions: color=threat, thickness=confidence, style=type.
   _arcStrokeDefault(d) {
     if (this._selectedArcArticleId && String(d.articleId) === String(this._selectedArcArticleId)) {
-      return 2.5
+      return 5.0
     }
-    // Network arcs: stroke by dominant connection type
+    // Network arcs: thickness encodes combined_strength (multi-signal confidence)
     if (d.connectionTypes) {
-      const dom = this._dominantConnectionType(d)
-      const base = d.thickness || 0.5
-      if (dom === 'narrative_route') return Math.max(base, 1.0)
-      if (dom === 'gdelt_event') return Math.max(base, 0.7)
-      if (dom === 'embedding_similarity') return Math.min(base, 0.5)
-      if (dom === 'shared_entities') return Math.min(base, 0.3)
-      return base
+      const s = d.strength || 0.2
+      // Map strength [0, 1] → thickness [1.0, 4.5]
+      return 1.0 + s * 3.5
     }
     if (d.arcStroke != null) return d.arcStroke
     if (d.driftIntensity != null) {

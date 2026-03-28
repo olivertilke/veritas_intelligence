@@ -249,6 +249,16 @@ class ArticleNetworkService
           event_b = events_by_article[b_id]&.first
           best_event = [event_a, event_b].compact.min_by { |e| e.goldstein_scale || 0 }
 
+          # Per-source/target Goldstein for delta calculation
+          gs_source = events_by_article[pair[0]]&.first&.goldstein_scale
+          gs_target = events_by_article[pair[1]]&.first&.goldstein_scale
+          gs_delta = (gs_source && gs_target) ? (gs_source - gs_target).abs.round(1) : nil
+
+          # Shared actor pair
+          shared_actors = normalize_actor_pair(
+            best_event&.actor1_name, best_event&.actor2_name
+          )&.gsub("→", "-")
+
           connections << {
             source_article_id: pair[0],
             target_article_id: pair[1],
@@ -257,6 +267,11 @@ class ArticleNetworkService
             event_description: best_event&.event_description,
             actor_summary: best_event&.actor_summary,
             goldstein_scale: best_event&.goldstein_scale,
+            goldstein_scale_source: gs_source,
+            goldstein_scale_target: gs_target,
+            goldstein_delta: gs_delta,
+            shared_actors: shared_actors,
+            event_root_code: best_event&.event_root_code,
             quad_class: best_event&.quad_class
           }
         end
@@ -431,7 +446,9 @@ class ArticleNetworkService
         end
         # Merge metadata (prefer non-nil)
         %i[framing framing_explanation route_id event_description actor_summary
-           goldstein_scale quad_class semantic_similarity shared_entities
+           goldstein_scale goldstein_scale_source goldstein_scale_target
+           goldstein_delta shared_actors event_root_code
+           quad_class semantic_similarity shared_entities
            shared_entity_count confidence].each do |field|
           existing[field] = conn[field] if conn[field].present? && existing[field].blank?
         end
@@ -529,7 +546,10 @@ class ArticleNetworkService
     target_sentiment = target.ai_analysis&.sentiment_label.to_s
     sentiment_shift = build_sentiment_shift(source_sentiment, target_sentiment)
 
-    {
+    # Determine dominant connection type (highest individual strength)
+    dominant_type = conn[:type_strengths]&.max_by { |_, v| v }&.first
+
+    arc_data = {
       id: "net-#{conn[:source_article_id]}-#{conn[:target_article_id]}",
       sourceArticleId: conn[:source_article_id],
       targetArticleId: conn[:target_article_id],
@@ -542,6 +562,7 @@ class ArticleNetworkService
       opacity: opacity,
       strength: conn[:strength],
       connectionTypes: conn[:connection_types],
+      dominantType: dominant_type,
       depth: conn[:depth] || 1,
       veritasThreatScore: threat_score,
       arcConfidence: confidence.round(2),
@@ -562,14 +583,6 @@ class ArticleNetworkService
       sentimentShift: sentiment_shift,
       framing: conn[:framing],
       framingExplanation: conn[:framing_explanation],
-      # GDELT (optional)
-      actorSummary: conn[:actor_summary],
-      eventDescription: conn[:event_description],
-      goldsteinScale: conn[:goldstein_scale],
-      quadClass: conn[:quad_class],
-      # Entity overlap (optional)
-      sharedEntities: conn[:shared_entities],
-      sharedEntityCount: conn[:shared_entity_count],
       # Route reference
       routeId: conn[:route_id],
       # Perspective
@@ -577,6 +590,37 @@ class ArticleNetworkService
       # Article IDs for both points
       articleId: source.id
     }
+
+    # Narrative route metadata (only if applicable)
+    if conn[:connection_types]&.include?(:narrative_route)
+      arc_data[:confidenceScore] = conn[:confidence].to_f.round(2) if conn[:confidence].to_f > 0
+    end
+
+    # GDELT metadata (only if applicable)
+    if conn[:connection_types]&.include?(:gdelt_event)
+      arc_data[:actorSummary] = conn[:actor_summary] if conn[:actor_summary].present?
+      arc_data[:eventDescription] = conn[:event_description] if conn[:event_description].present?
+      arc_data[:goldsteinScale] = conn[:goldstein_scale] if conn[:goldstein_scale]
+      arc_data[:goldsteinScaleSource] = conn[:goldstein_scale_source] if conn[:goldstein_scale_source]
+      arc_data[:goldsteinScaleTarget] = conn[:goldstein_scale_target] if conn[:goldstein_scale_target]
+      arc_data[:goldsteinDelta] = conn[:goldstein_delta] if conn[:goldstein_delta]
+      arc_data[:sharedActors] = conn[:shared_actors] if conn[:shared_actors].present?
+      arc_data[:eventRootCode] = conn[:event_root_code] if conn[:event_root_code].present?
+      arc_data[:quadClass] = conn[:quad_class] if conn[:quad_class]
+    end
+
+    # Embedding metadata (only if applicable)
+    if conn[:connection_types]&.include?(:embedding_similarity)
+      arc_data[:cosineSimilarity] = conn[:semantic_similarity] if conn[:semantic_similarity]
+    end
+
+    # Shared entity metadata (only if applicable)
+    if conn[:connection_types]&.include?(:shared_entities)
+      arc_data[:sharedEntities] = conn[:shared_entities] if conn[:shared_entities].present?
+      arc_data[:sharedEntityCount] = conn[:shared_entity_count] if conn[:shared_entity_count]
+    end
+
+    arc_data
   end
 
   def build_article_node(article, center)
