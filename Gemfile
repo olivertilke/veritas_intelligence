@@ -82,6 +82,6 @@ gem "ruby-readability", "~> 0.7.3"
 
 gem "sendgrid-ruby", "~> 6.7"
 
-gem "neighbor", "~> 0.6.0"
+gem "neighbor", "~> 1.0.0"
 
 gem "google-cloud-bigquery"
