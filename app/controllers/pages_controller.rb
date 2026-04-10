@@ -319,7 +319,7 @@ class PagesController < ApplicationController
       if a.ai_analysis.nil?
         weight = 0.4
       else
-        weight = ((threat / 10.0) * 0.65 + ((100.0 - trust) / 100.0) * 0.35).clamp(0.2, 1.0)
+        weight = (((threat / 10.0) * 0.65) + (((100.0 - trust) / 100.0) * 0.35)).clamp(0.2, 1.0)
       end
 
       { lat: a.latitude, lng: a.longitude, weight: weight }
