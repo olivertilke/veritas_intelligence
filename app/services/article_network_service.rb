@@ -21,8 +21,16 @@ class ArticleNetworkService
 
   # Similarity threshold for pgvector expansion (same as NarrativeRouteGeneratorService)
   EMBEDDING_THRESHOLD = 0.65
-  # Max cosine distance = 1 - similarity
+  # Maximum cosine distance = 1 - similarity
   MAX_COSINE_DISTANCE = 1.0 - EMBEDDING_THRESHOLD
+
+  THREAT_LEVEL_SCORES = {
+    "CRITICAL"   => 10.0,
+    "HIGH"       => 7.5,
+    "MODERATE"   => 5.0,
+    "LOW"        => 2.5,
+    "NEGLIGIBLE" => 1.0
+  }.freeze
 
   # Minimum combined strength to include a connection
   MIN_STRENGTH = 0.15
@@ -117,10 +125,9 @@ class ArticleNetworkService
   # Connections Between (no expansion)
   # ──────────────────────────────────────────────────────────────
 
-  def build_connections_between(articles, time_window)
+  def build_connections_between(articles, _time_window)
     article_ids = articles.map(&:id)
     loaded = preload_articles(article_ids)
-    time_range = (articles.filter_map(&:published_at).min - time_window)..(articles.filter_map(&:published_at).max + time_window)
 
     connections = []
 
@@ -293,15 +300,18 @@ class ArticleNetworkService
     # Batch: one pgvector query per article (unavoidable for nearest-neighbor)
     # but we limit to 5 neighbors each to keep it fast
     articles_with_embeddings.each do |article|
-      sql = <<~SQL
-        SELECT id, embedding <=> '#{article.embedding.to_json}'::vector AS distance
-        FROM articles
-        WHERE id != #{article.id}
-          AND embedding IS NOT NULL
-          AND published_at BETWEEN '#{time_range.begin.iso8601}' AND '#{time_range.end.iso8601}'
-        ORDER BY embedding <=> '#{article.embedding.to_json}'::vector
-        LIMIT 8
-      SQL
+      sql = ActiveRecord::Base.sanitize_sql_array([
+        <<~SQL,
+          SELECT id, embedding <=> ?::vector AS distance
+          FROM articles
+          WHERE id != ?
+            AND embedding IS NOT NULL
+            AND published_at BETWEEN ? AND ?
+          ORDER BY embedding <=> ?::vector
+          LIMIT 8
+        SQL
+        article.embedding.to_json, article.id, time_range.begin.iso8601, time_range.end.iso8601, article.embedding.to_json
+      ])
 
       results = ActiveRecord::Base.connection.execute(sql)
 
@@ -342,14 +352,17 @@ class ArticleNetworkService
       other_ids = (article_ids - [article.id])
       next if other_ids.empty?
 
-      sql = <<~SQL
-        SELECT id, embedding <=> '#{article.embedding.to_json}'::vector AS distance
-        FROM articles
-        WHERE id IN (#{other_ids.join(',')})
-          AND embedding IS NOT NULL
-        ORDER BY embedding <=> '#{article.embedding.to_json}'::vector
-        LIMIT 10
-      SQL
+      sql = ActiveRecord::Base.sanitize_sql_array([
+        <<~SQL,
+          SELECT id, embedding <=> ?::vector AS distance
+          FROM articles
+          WHERE id IN (?)
+            AND embedding IS NOT NULL
+          ORDER BY embedding <=> ?::vector
+          LIMIT 10
+        SQL
+        article.embedding.to_json, other_ids, article.embedding.to_json
+      ])
 
       results = ActiveRecord::Base.connection.execute(sql)
 
@@ -382,22 +395,25 @@ class ArticleNetworkService
     return [] if article_ids.empty?
 
     # Single SQL: find article pairs sharing entities
-    sql = <<~SQL
-      SELECT em1.article_id AS source_id,
-             em2.article_id AS target_id,
-             COUNT(DISTINCT em1.entity_id) AS shared_count,
-             ARRAY_AGG(DISTINCT e.name ORDER BY e.name) AS entity_names
-      FROM entity_mentions em1
-      JOIN entity_mentions em2 ON em1.entity_id = em2.entity_id
-                               AND em1.article_id < em2.article_id
-      JOIN entities e ON e.id = em1.entity_id
-      WHERE em1.article_id IN (#{article_ids.join(',')})
-        AND em2.article_id IN (#{article_ids.join(',')})
-      GROUP BY em1.article_id, em2.article_id
-      HAVING COUNT(DISTINCT em1.entity_id) >= 2
-      ORDER BY shared_count DESC
-      LIMIT 100
-    SQL
+    sql = ActiveRecord::Base.sanitize_sql_array([
+      <<~SQL,
+        SELECT em1.article_id AS source_id,
+               em2.article_id AS target_id,
+               COUNT(DISTINCT em1.entity_id) AS shared_count,
+               ARRAY_AGG(DISTINCT e.name ORDER BY e.name) AS entity_names
+        FROM entity_mentions em1
+        JOIN entity_mentions em2 ON em1.entity_id = em2.entity_id
+                                 AND em1.article_id < em2.article_id
+        JOIN entities e ON e.id = em1.entity_id
+        WHERE em1.article_id IN (?)
+          AND em2.article_id IN (?)
+        GROUP BY em1.article_id, em2.article_id
+        HAVING COUNT(DISTINCT em1.entity_id) >= 2
+        ORDER BY shared_count DESC
+        LIMIT 100
+      SQL
+      article_ids, article_ids
+    ])
 
     results = ActiveRecord::Base.connection.execute(sql)
 
@@ -495,7 +511,7 @@ class ArticleNetworkService
       next unless source && target
       next unless source.latitude && source.longitude && target.latitude && target.longitude
 
-      build_arc(source, target, conn, center)
+      build_arc(source, target, conn)
     end
 
     # Sort by strength, apply render limit
@@ -524,7 +540,7 @@ class ArticleNetworkService
     }
   end
 
-  def build_arc(source, target, conn, center)
+  def build_arc(source, target, conn)
     # Compute veritasThreatScore-based color
     source_threat = source.ai_analysis&.threat_level.to_s
     target_threat = target.ai_analysis&.threat_level.to_s
@@ -646,24 +662,16 @@ class ArticleNetworkService
   # Scoring (veritasThreatScore-derived)
   # ──────────────────────────────────────────────────────────────
 
-  THREAT_LEVEL_SCORES = {
-    "CRITICAL"   => 10.0,
-    "HIGH"       => 7.5,
-    "MODERATE"   => 5.0,
-    "LOW"        => 2.5,
-    "NEGLIGIBLE" => 1.0
-  }.freeze
-
   def compute_arc_threat_score(source_threat, target_threat, conn)
     s = THREAT_LEVEL_SCORES[source_threat] || 0.0
     t = THREAT_LEVEL_SCORES[target_threat] || 0.0
     threat_context = if s > 0 && t > 0
-      (s + t) / 2.0
-    elsif s > 0 || t > 0
-      [s, t].max
-    else
-      0.0
-    end
+                       (s + t) / 2.0
+                     elsif s > 0 || t > 0
+                       [s, t].max
+                     else
+                       0.0
+                     end
 
     # Boost from connection type diversity
     type_bonus = conn[:connection_types].size > 1 ? 0.5 : 0.0
@@ -677,7 +685,7 @@ class ArticleNetworkService
       gdelt_bonus += 1.0
     end
 
-    score = (threat_context * 0.6 + type_bonus + gdelt_bonus).clamp(0.0, 10.0).round(1)
+    score = ((threat_context * 0.6) + type_bonus + gdelt_bonus).clamp(0.0, 10.0).round(1)
     score
   end
 

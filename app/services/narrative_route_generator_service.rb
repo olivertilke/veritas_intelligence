@@ -76,17 +76,25 @@ class NarrativeRouteGeneratorService
     max_distance = 1 - SIMILARITY_THRESHOLD
     
     # Direct SQL query to get distances
-    sql = <<~SQL
-      SELECT id, headline, source_name, published_at, latitude, longitude,
-             embedding <=> '#{article.embedding.to_json}'::vector AS distance
-      FROM articles 
-      WHERE id != #{article.id}
-        AND embedding IS NOT NULL
-        AND published_at >= '#{article.published_at - 30.days}'
-        AND published_at <= '#{article.published_at + 7.days}'
-      ORDER BY embedding <=> '#{article.embedding.to_json}'::vector
-      LIMIT #{max_results}
-    SQL
+    sql = ActiveRecord::Base.sanitize_sql_array([
+      <<~SQL,
+        SELECT id, headline, source_name, published_at, latitude, longitude,
+               embedding <=> ?::vector AS distance
+        FROM articles 
+        WHERE id != ?
+          AND embedding IS NOT NULL
+          AND published_at >= ?
+          AND published_at <= ?
+        ORDER BY embedding <=> ?::vector
+        LIMIT ?
+      SQL
+      article.embedding.to_json,
+      article.id,
+      article.published_at - 30.days,
+      article.published_at + 7.days,
+      article.embedding.to_json,
+      max_results.to_i
+    ])
     
     results = ActiveRecord::Base.connection.execute(sql)
     
@@ -194,17 +202,14 @@ class NarrativeRouteGeneratorService
 
     source_name = target.source_name.to_s.downcase
 
-    framing = if source_name.include?('rt') || source_name.include?('sputnik') || source_name.include?('xinhua')
-      'amplified'
-    elsif source_name.include?('breitbart') || source_name.include?('daily wire')
-      'amplified'
-    elsif source_name.include?('cnn') || source_name.include?('msnbc')
-      'amplified'
-    elsif contains_distortion_indicators?(origin.headline, target.headline)
-      'distorted'
-    else
-      'neutralized'
-    end
+    framing =
+      if ['rt', 'sputnik', 'xinhua', 'breitbart', 'daily wire', 'cnn', 'msnbc'].any? { |s| source_name.include?(s) }
+        'amplified'
+      elsif contains_distortion_indicators?(origin.headline, target.headline)
+        'distorted'
+      else
+        'neutralized'
+      end
 
     { framing: framing, confidence: 0.5, explanation: "(legacy: classified by source name)" }
   end

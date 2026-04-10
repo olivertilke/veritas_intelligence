@@ -393,21 +393,26 @@ class PagesController < ApplicationController
 
     # Top connected entities via raw SQL — avoids COUNT(*) pluck issues
     article_ids = entity.article_ids.first(50)
-    connected = if article_ids.any?
-      rows = ActiveRecord::Base.connection.execute(<<~SQL)
-        SELECT e.id, e.name, e.entity_type, COUNT(*) AS shared_count
-        FROM entity_mentions em
-        JOIN entities e ON e.id = em.entity_id
-        WHERE em.article_id IN (#{article_ids.map(&:to_i).join(',')})
-          AND em.entity_id != #{entity.id.to_i}
-        GROUP BY e.id, e.name, e.entity_type
-        ORDER BY shared_count DESC
-        LIMIT 5
-      SQL
-      rows.map { |r| { id: r["id"].to_i, name: r["name"], entity_type: r["entity_type"], shared_articles: r["shared_count"].to_i } }
-    else
-      []
-    end
+    connected =
+      if article_ids.any?
+        sql = ActiveRecord::Base.sanitize_sql_array([
+          <<~SQL,
+            SELECT e.id, e.name, e.entity_type, COUNT(*) AS shared_count
+            FROM entity_mentions em
+            JOIN entities e ON e.id = em.entity_id
+            WHERE em.article_id IN (?)
+              AND em.entity_id != ?
+            GROUP BY e.id, e.name, e.entity_type
+            ORDER BY shared_count DESC
+            LIMIT 5
+          SQL
+          article_ids, entity.id
+        ])
+        rows = ActiveRecord::Base.connection.execute(sql)
+        rows.map { |r| { id: r["id"].to_i, name: r["name"], entity_type: r["entity_type"], shared_articles: r["shared_count"].to_i } }
+      else
+        []
+      end
 
     sentiment_breakdown = compute_sentiment_breakdown(entity)
     max_mentions = Entity.maximum(:mentions_count).to_f
