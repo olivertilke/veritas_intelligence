@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_24_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_10_132626) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -42,6 +42,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_24_120000) do
     t.string "data_source", default: "newsapi", null: false
     t.vector "embedding", limit: 1536
     t.datetime "fetched_at"
+    t.string "geo_confidence"
     t.string "geo_method", default: "unresolved"
     t.string "headline"
     t.float "latitude"

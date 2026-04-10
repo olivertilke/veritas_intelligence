@@ -41,8 +41,13 @@
   <!-- Country + Coordinates + Intelligence Actions Row -->
   <div class="d-flex justify-content-between align-items-center">
     <span class="feed-location" style="font-size: 0.6rem; color: #64748b;">
-      <i class="fa fa-map-marker-alt me-1"></i>
-      <%= article.country&.name %> [<%= article.country&.iso_code %>]
+      <% if article.geo_confidence == 'none' || article.latitude.blank? || (article.latitude == 0.0 && article.longitude == 0.0) %>
+        <i class="fa fa-map-marker-alt me-1" style="opacity: 0.5;"></i>
+        <span style="font-style: italic; opacity: 0.8;">Location: Unknown</span>
+      <% else %>
+        <i class="fa fa-map-marker-alt me-1"></i>
+        <%= article.country&.name || "Global" %> <%= "[#{article.country&.iso_code}]" if article.country %>
+      <% end %>
     </span>
     <div class="d-flex align-items-center gap-1 flex-wrap justify-content-end">
       <% if journey_data.present? %>

@@ -264,10 +264,11 @@ class PagesController < ApplicationController
       .order('article_count DESC')
       .limit(25)  # Top 25 countries by article count
     
-    regions = countries_with_articles.map do |c|
+    regions = countries_with_articles.filter_map do |c|
       article_count = c.attributes['article_count'].to_i
       threat = [article_count, 10].min
-      coords = country_coordinates[c.iso_code] || [0.0, 0.0]
+      coords = country_coordinates[c.iso_code]
+      next unless coords
 
       {
         lat:    coords[0],
@@ -280,8 +281,9 @@ class PagesController < ApplicationController
     end
 
     # Heatmap cluster summaries — per-country intel for thermal tooltip
-    heatmap_clusters = countries_with_articles.first(15).map do |c|
-      coords = country_coordinates[c.iso_code] || [0.0, 0.0]
+    heatmap_clusters = countries_with_articles.first(15).filter_map do |c|
+      coords = country_coordinates[c.iso_code]
+      next unless coords
       country_articles = filtered_articles.select { |a| a.country_id == c.id }
       avg_threat = if country_articles.any?
                      threats = country_articles.filter_map { |a| a.ai_analysis&.threat_numeric }
