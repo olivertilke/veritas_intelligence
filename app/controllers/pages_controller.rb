@@ -284,13 +284,13 @@ class PagesController < ApplicationController
       coords = country_coordinates[c.iso_code] || [0.0, 0.0]
       country_articles = filtered_articles.select { |a| a.country_id == c.id }
       avg_threat = if country_articles.any?
-                     threats = country_articles.filter_map { |a| a.ai_analysis&.threat_level&.to_i }
+                     threats = country_articles.filter_map { |a| a.ai_analysis&.threat_numeric }
                      threats.any? ? (threats.sum.to_f / threats.size).round(1) : 0
                    else
                      0
                    end
       top_headlines = country_articles
-        .sort_by { |a| -(a.ai_analysis&.threat_level.to_i) }
+        .sort_by { |a| -(a.ai_analysis&.threat_numeric || 0) }
         .first(3)
         .map { |a| { headline: a.headline.truncate(80), source: a.source_name } }
 
@@ -311,7 +311,7 @@ class PagesController < ApplicationController
       next if a.latitude.blank? || a.longitude.blank?
       next if null_island?(a.latitude, a.longitude)
 
-      threat = a.ai_analysis&.threat_level.to_f   # 0–10 (nil → 0)
+      threat = a.ai_analysis&.threat_numeric.to_f   # 0–10 (nil → 0)
       trust  = a.ai_analysis&.trust_score.to_f    # 0–100 (nil → 0, treated as unknown)
 
       # Articles without AI analysis get a base heat of 0.4 (visible but not alarming).

@@ -54,8 +54,8 @@ When in doubt: **less code, more clarity.**
 | Database | PostgreSQL + pgvector (embeddings & vector search) |
 | 3D Rendering | Three.js + Globe.gl |
 | Styling | Tailwind CSS (dark theme, neon palette) |
-| News Data | NewsAPI.org |
-| AI Layer | OpenAI GPT-5.4, Google Gemini 3 Pro, Anthropic Claude Haiku/Sonnet |
+| News Data | NewsAPI.org + GDELT (BigQuery) |
+| AI Layer | OpenRouter multi-model pipeline (Gemini, GPT, Claude) |
 | Deployment | Heroku |
 | Auth | Devise |
 | Background Jobs | Solid Queue (Active Job) |
@@ -65,15 +65,19 @@ When in doubt: **less code, more clarity.**
 ## 🗂️ Architecture Overview
 
 app/
-├── models/ # Article, NarrativeArc, BiasScore, Perspective, Agent
-├── services/ # AI agent orchestration, bias analysis, sentiment scoring
-├── jobs/ # Background jobs for NewsAPI polling, embedding generation
-├── channels/ # ActionCable channels for real-time globe updates
-├── controllers/ # API endpoints + page controllers
+├── models/       # Article, AiAnalysis, NarrativeArc, NarrativeRoute, Entity,
+│                 # NarrativeSignature, ContradictionLog, SourceCredibility,
+│                 # IntelligenceReport, IntelligenceBrief, GdeltEvent, Region, Country
+├── services/     # AnalysisPipeline, OpenRouterClient, RagAgent, EmbeddingService,
+│                 # GeolocatorService, ArticleNetworkService, EntityExtractionService,
+│                 # ContradictionDetectionService, NarrativeRouteGeneratorService,
+│                 # IntelligenceSearchService, RegionalAnalysisService + more
+├── jobs/         # Background jobs for NewsAPI/GDELT polling, AI analysis, embedding gen
+├── channels/     # GlobeChannel, AlertsChannel, SearchChannel (ActionCable)
+├── controllers/  # PagesController, ArticlesController, Api::SearchController + more
 └── javascript/
-├── globe/ # Three.js + Globe.gl 3D rendering
-├── sliders/ # Timeline slider + Perspective slider logic
-└── agents/ # Frontend AI agent status indicators
+    └── controllers/ # Stimulus controllers: globe, timeline, perspective, search,
+                     # narrative_dna, entity_nexus, tribunal, voice_orb, consciousness
 
 
 ---
@@ -93,9 +97,10 @@ heroku run rails db:migrate      # production migrations
 heroku logs --tail               # live logs
 heroku run rails c               # production console
 
-# Testing
-rspec spec/models/<file>_spec.rb # run single model spec (NOT full suite)
-rspec spec/services/             # run service specs only
+# Testing (Minitest)
+bin/rails test                   # run all tests
+bin/rails test test/models/      # run model tests only
+bin/rails test test/services/    # run service tests only
 
 # Branch workflow
 git checkout -b olli/<feature>   # new feature branch

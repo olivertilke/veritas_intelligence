@@ -1714,7 +1714,23 @@ export default class extends Controller {
   _onHexClicked(hex) {
     if (!hex || !this._globe) return
     if (this._journeyActive) return
-    // Fly to the hex centroid
+
+    // Pick the best article from this hex bin (highest threat or first available)
+    const points = hex.points || []
+    if (points.length > 0) {
+      const best = points.reduce((a, b) => {
+        const ta = (a.threat_level || a.threatLevel || '').toUpperCase()
+        const tb = (b.threat_level || b.threatLevel || '').toUpperCase()
+        const score = t => t === 'CRITICAL' ? 5 : t === 'HIGH' ? 4 : t === 'MODERATE' ? 3 : t === 'LOW' ? 2 : 1
+        return score(tb) > score(ta) ? b : a
+      })
+      if (best.id) {
+        this._onPointClicked(best)
+        return
+      }
+    }
+
+    // Fallback: fly to hex centroid if no identifiable article
     const center = hex.center || {}
     if (center.lat != null && center.lng != null) {
       this._flyTo(center.lat, center.lng, 2.0)
@@ -2565,13 +2581,13 @@ export default class extends Controller {
   // Three visual dimensions: color=threat, thickness=confidence, style=type.
   _arcStrokeDefault(d) {
     if (this._selectedArcArticleId && String(d.articleId) === String(this._selectedArcArticleId)) {
-      return 5.0
+      return 3.0
     }
     // Network arcs: thickness encodes combined_strength (multi-signal confidence)
     if (d.connectionTypes) {
       const s = d.strength || 0.2
-      // Map strength [0, 1] → thickness [1.0, 4.5]
-      return 1.0 + s * 3.5
+      // Map strength [0, 1] → thickness [0.4, 2.2]
+      return 0.4 + s * 1.8
     }
     if (d.arcStroke != null) return d.arcStroke
     if (d.driftIntensity != null) {

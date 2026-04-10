@@ -1,5 +1,10 @@
 # GDELT Integration Upgrade Plan
-**Erstellt:** 2026-03-24 | **Status:** Phase 1 in Arbeit
+**Erstellt:** 2026-03-24 | **Status:** Phases 1-3 ✅ ABGESCHLOSSEN (siehe GDELT_UPGRADE_REPORT.md) | Phase 4 offen
+
+> **Hinweis:** Die GDELT-Integration ist aktiv und läuft in Production.
+> GKG (stündlich) + Events (alle 2h) sind implementiert mit dem 3-Tier-Sicherheitssystem.
+> Verbleibende Phase-4-Items (kumulativer Byte-Tracker, Regressionstests) werden über
+> `docs/VERITAS_MASTER_EXECUTION_PLAN.md` Phase 5 (WP-5.2) weiterverfolgt.
 
 ---
 

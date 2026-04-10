@@ -513,11 +513,9 @@ At the end of an AI coding session, leave behind:
 - what remains unfinished
 - what should happen next
 
-Use project files like:
-
-- `codex_to_do.md`
-- roadmap docs
-- architecture docs
+- `docs/VERITAS_MASTER_EXECUTION_PLAN.md` (single source of truth for all development)
+- `AGENTS.md` / `CLAUDE.md` (agent identity and project context)
+- `ai_execution_rules.md` (this document)
 
 ### Rule 33: Do Not Secretly Shift Product Direction
 
