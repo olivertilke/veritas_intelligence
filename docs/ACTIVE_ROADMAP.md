@@ -8,7 +8,7 @@ This is the single source of truth for current execution, derived from `VERITAS_
 ### Critical Bug Fixes
 - [x] **WP-0.1:** Fix Threat Level Data Corruption
 - [x] **WP-0.2:** Kill Null Island 
-- [ ] **WP-0.4:** Parameterize Raw SQL
+- [x] **WP-0.4:** Parameterize Raw SQL
 - [ ] **WP-0.3:** Pin CDN Assets Locally
 - [ ] **WP-0.5:** Country Centroids Table
 
